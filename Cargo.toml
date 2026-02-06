@@ -1,0 +1,29 @@
+[package]
+name = "tas"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# GUI
+iced = { version = "0.14", features = ["svg", "advanced", "tokio"] }
+
+# Async & Utilities
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["serde", "v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+directories = "5.0"
+
+# Compression & Encoding (NEW for snapshots)
+flate2 = "1.0"
+base64 = "0.22"
+
+# Database Engine (SQLite)
+sqlx = { version = "0.8", features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+    "uuid",
+    "chrono",
+    "migrate"
+] }

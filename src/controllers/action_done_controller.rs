@@ -1,0 +1,502 @@
+// src/controllers/action_done_controller.rs
+
+use iced::widget::text_editor;
+
+use crate::app::AppState;
+use crate::state::{DbAction, DemoResetScope, ToastKind};
+
+fn invalidate_trash(state: &mut AppState) {
+    state.trash_entries.clear();
+    state.trash_loaded = false;
+}
+
+fn clear_forge_ui_state(state: &mut AppState) {
+    state.novels.clear();
+    state.active_novel_id = None;
+    state.active_novel_chapters.clear();
+    state.active_chapter_id = None;
+    state.active_chapter_scenes.clear();
+    state.active_scene_id = None;
+    state.forge_content = text_editor::Content::new();
+}
+
+fn clear_universe_scoped_caches_if_match(state: &mut AppState, universe_id: &String) {
+    // --- Creatures (Bestiary) ---
+    if state.loaded_creatures_universe.as_ref() == Some(universe_id) {
+        state.loaded_creatures_universe = None;
+        state.creatures.clear();
+    }
+    // ✅ FASE 10: abrir compuerta completa (loaded_for + in_progress)
+    state.core_creatures_loaded_for.remove(universe_id);
+    state.core_loading_in_progress.remove(&crate::state::CoreLoadKey::Creatures {
+        universe_id: universe_id.clone(),
+    });
+
+    // --- Locations ---
+    if state.loaded_locations_universe.as_ref() == Some(universe_id) {
+        state.loaded_locations_universe = None;
+        state.locations.clear();
+    }
+    state.core_locations_loaded_for.remove(universe_id);
+    state.core_loading_in_progress.remove(&crate::state::CoreLoadKey::Locations {
+        universe_id: universe_id.clone(),
+    });
+
+    // --- Timeline ---
+    if state.loaded_timeline_universe.as_ref() == Some(universe_id) {
+        state.loaded_timeline_universe = None;
+        state.timeline_events.clear();
+        state.timeline_eras.clear();
+    }
+    state.core_timeline_loaded_for.remove(universe_id);
+    state.core_loading_in_progress.remove(&crate::state::CoreLoadKey::Timeline {
+        universe_id: universe_id.clone(),
+    });
+
+    // --- Snapshots ---
+    if state.loaded_snapshots_universe.as_ref() == Some(universe_id) {
+        state.loaded_snapshots_universe = None;
+        state.snapshots.clear();
+    }
+    state.core_snapshots_loaded_for.remove(universe_id);
+    state.core_loading_in_progress.remove(&crate::state::CoreLoadKey::Snapshots {
+        universe_id: universe_id.clone(),
+    });
+
+    // --- Forge (UI state) ---
+    if state.loaded_forge_universe.as_ref() == Some(universe_id) {
+        state.loaded_forge_universe = None;
+        clear_forge_ui_state(state);
+    }
+}
+
+fn handle_deleted_universe(state: &mut AppState, deleted_uid: String) {
+    // Force refresh of universes list
+    state.universes.clear();
+
+    // If we deleted the currently-open UniverseDetail, navigate out.
+    if matches!(
+        &state.route,
+        crate::app::Route::UniverseDetail { universe_id }
+            if universe_id == &deleted_uid
+    ) {
+        state.route = crate::app::Route::UniverseList;
+    }
+
+    // Defensive cleanup of scoped caches
+    clear_universe_scoped_caches_if_match(state, &deleted_uid);
+}
+
+fn handle_deleted_board(state: &mut AppState, deleted_id: String) {
+    // Force refresh of boards list
+    state.boards_list.clear();
+
+    // If we deleted the currently-open board, navigate out and clear pm_data.
+    if matches!(
+        &state.route,
+        crate::app::Route::PmBoard { board_id }
+            if board_id == &deleted_id
+    ) {
+        state.route = crate::app::Route::PmList;
+    }
+
+    if let Some(data) = &state.pm_data {
+        if data.board.id == deleted_id {
+            state.pm_data = None;
+            state.pm_state = crate::app::PmState::Idle;
+            state.hovered_column = None;
+            state.hovered_card = None;
+        }
+    }
+}
+
+fn invalidate_after_restore_from_trash(state: &mut AppState) {
+    // Refresh trash list
+    invalidate_trash(state);
+
+    // Invalidar caches para que se recarguen
+    state.universes.clear();
+    state.boards_list.clear();
+    state.novels.clear();
+
+    // --- Core caches (flags + data) ---
+    state.loaded_creatures_universe = None;
+    state.creatures.clear();
+
+    state.loaded_locations_universe = None;
+    state.locations.clear();
+
+    state.loaded_timeline_universe = None;
+    state.timeline_events.clear();
+    state.timeline_eras.clear();
+
+    state.loaded_snapshots_universe = None;
+    state.snapshots.clear();
+
+    // ✅ FASE 10: abrir compuertas globales (loaded_for + in_progress)
+    state.core_creatures_loaded_for.clear();
+    state.core_locations_loaded_for.clear();
+    state.core_timeline_loaded_for.clear();
+    state.core_snapshots_loaded_for.clear();
+    state.core_loading_in_progress.clear();
+
+    // --- Forge caches/UI ---
+    state.loaded_forge_universe = None;
+    state.active_novel_chapters.clear();
+    state.active_chapter_scenes.clear();
+}
+
+fn apply_global_invalidate_legacy(state: &mut AppState) {
+    // Preserve old behavior: if not handled explicitly, do global invalidate.
+    state.data_dirty = true;
+
+    // Flags legacy
+    state.loaded_creatures_universe = None;
+    state.loaded_locations_universe = None;
+    state.loaded_timeline_universe = None;
+    state.loaded_snapshots_universe = None;
+
+    // ✅ FASE 10: abrir compuertas (loaded_for + in_progress)
+    state.core_creatures_loaded_for.clear();
+    state.core_locations_loaded_for.clear();
+    state.core_timeline_loaded_for.clear();
+    state.core_snapshots_loaded_for.clear();
+    state.core_loading_in_progress.clear();
+
+    // PM data
+    state.pm_data = None;
+}
+pub fn handle_action_done(state: &mut AppState, result: &Result<(), String>) {
+    let inflight = state.db_inflight.clone();
+    state.db_inflight = None;
+
+    match result {
+        Ok(_) => {
+            let mut do_global_invalidate = true;
+
+            if let Some(ref action) = inflight {
+                // Si la acción fue MoveToTrash, invalidar cache de trash SIEMPRE
+                if matches!(action, DbAction::MoveToTrash { .. }) {
+                    invalidate_trash(state);
+                }
+
+                match action {
+                    // =========================================================
+                    // UNIVERSES LIST
+                    // =========================================================
+                    DbAction::CreateUniverse { .. } => {
+                        do_global_invalidate = false;
+                        state.universes.clear();
+                    }
+
+                    DbAction::MoveToTrash { target_type, target_id, .. } if target_type == "universe" => {
+                        do_global_invalidate = false;
+                        handle_deleted_universe(state, target_id.clone());
+                    }
+
+                    // =========================================================
+                    // PM BOARDS LIST
+                    // =========================================================
+                    DbAction::CreateBoard { .. } => {
+                        do_global_invalidate = false;
+                        state.boards_list.clear();
+                    }
+
+                    DbAction::MoveToTrash { target_type, target_id, .. } if target_type == "board" => {
+                        do_global_invalidate = false;
+                        handle_deleted_board(state, target_id.clone());
+                    }
+
+                    // =========================================================
+                    // THE FORGE (NOVEL/CHAPTER/SCENE) - PRO (cache inteligente)
+                    // =========================================================
+                    DbAction::CreateNovel(_, _, _) => {
+                        do_global_invalidate = false;
+                        // Crear novel ya se reflejó localmente; solo marcamos novels como stale.
+                        crate::controllers::forge_data_controller::invalidate_novels_cache(state);
+                    }
+
+                    DbAction::CreateChapter(_, novel_id, _) => {
+                        do_global_invalidate = false;
+                        // Ya lo agregaste localmente; solo invalidamos chapters de ese novel por seguridad.
+                        let novel_key = novel_id.to_string();
+                        crate::controllers::forge_data_controller::invalidate_chapters_cache(state, &novel_key);
+                    }
+
+                    DbAction::ReorderChapter(_, _) => {
+                        do_global_invalidate = false;
+                        // Reorder se reflejó localmente (si tu UI lo hace); no invalidamos aquí.
+                        // Si luego querés “paranoia mode”, lo hacemos en la fase de bugfix final.
+                    }
+
+                    DbAction::CreateScene(_, chapter_id, _) => {
+                        do_global_invalidate = false;
+                        // Ya lo agregaste localmente; solo invalidamos scenes de ese chapter por seguridad.
+                        let chapter_key = chapter_id.to_string();
+                        crate::controllers::forge_data_controller::invalidate_scenes_cache(state, &chapter_key);
+                    }
+
+                    DbAction::ReorderScene(_, _) => {
+                        do_global_invalidate = false;
+                        // Igual que chapters: no invalidamos aquí.
+                    }
+
+                    DbAction::MoveToTrash { target_type, target_id, parent_type, parent_id, .. }
+                    if target_type == "novel" =>
+                        {
+                            do_global_invalidate = false;
+
+                            // 1) invalidar lista de novels (stale) y limpiar caches del Forge
+                            crate::controllers::forge_data_controller::invalidate_novels_cache(state);
+
+                            // 2) si el novel borrado era el activo, limpiamos downstream “UI state”
+                            if state.active_novel_id.as_ref() == Some(target_id) {
+                                state.active_novel_id = None;
+                                state.active_novel_chapters.clear();
+                                state.active_chapter_id = None;
+                                state.active_chapter_scenes.clear();
+                                state.active_scene_id = None;
+                                state.forge_content = text_editor::Content::new();
+                            }
+
+                            // 3) limpieza defensiva de expansión (evita IDs zombis en sets)
+                            state.expanded_novels.remove(target_id);
+                        }
+
+                    DbAction::MoveToTrash { target_type, target_id, parent_type, parent_id, .. }
+                    if target_type == "chapter" =>
+                        {
+                            do_global_invalidate = false;
+
+                            // Si viene parent_id y parent_type, invalidamos chapters del novel padre
+                            if parent_type.as_deref() == Some("novel") {
+                                if let Some(pid) = parent_id.as_ref() {
+                                    crate::controllers::forge_data_controller::invalidate_chapters_cache(state, pid);
+                                }
+                            }
+
+                            // Si el chapter borrado era el activo, limpiar downstream
+                            if state.active_chapter_id.as_ref() == Some(target_id) {
+                                state.active_chapter_id = None;
+                                state.active_chapter_scenes.clear();
+                                state.active_scene_id = None;
+                                state.forge_content = text_editor::Content::new();
+                            }
+
+                            state.expanded_chapters.remove(target_id);
+                        }
+
+                    DbAction::MoveToTrash { target_type, target_id, parent_type, parent_id, .. }
+                    if target_type == "scene" =>
+                        {
+                            do_global_invalidate = false;
+
+                            // Si viene parent_id y parent_type, invalidamos scenes del chapter padre
+                            if parent_type.as_deref() == Some("chapter") {
+                                if let Some(pid) = parent_id.as_ref() {
+                                    crate::controllers::forge_data_controller::invalidate_scenes_cache(state, pid);
+                                }
+                            }
+
+                            // Si la scene borrada era la activa, limpiar editor/selection
+                            if state.active_scene_id.as_ref() == Some(target_id) {
+                                state.active_scene_id = None;
+                                state.forge_content = text_editor::Content::new();
+                            }
+                        }
+
+                    DbAction::UpdateNovel(novel) => {
+                        do_global_invalidate = false;
+
+                        // ✅ Confirmación DB: abrir compuerta de novels
+                        crate::controllers::forge_data_controller::invalidate_novels_cache(state);
+
+                        // ✅ Si el novel activo es este, refrescamos breadcrumb/panel indirectamente
+                        if state.active_novel_id.as_deref() == Some(&novel.id) {
+                            // No borramos nada, solo aseguramos reload permitido
+                            crate::logger::info("✅ Novel rename confirmado por DB");
+                        }
+                    }
+
+                    DbAction::UpdateChapter(chapter) => {
+                        do_global_invalidate = false;
+
+                        // ✅ Confirmación DB: invalidar chapters del novel padre
+                        crate::controllers::forge_data_controller::invalidate_chapters_cache(
+                            state,
+                            &chapter.novel_id,
+                        );
+
+                        crate::logger::info("✅ Chapter rename confirmado por DB");
+                    }
+
+                    DbAction::UpdateScene(scene) => {
+                        do_global_invalidate = false;
+
+                        // ✅ Confirmación DB: invalidar scenes del chapter padre
+                        crate::controllers::forge_data_controller::invalidate_scenes_cache(
+                            state,
+                            &scene.chapter_id,
+                        );
+
+                        crate::logger::info("✅ Scene rename confirmado por DB");
+                    }
+
+                    // =========================================================
+                    // TRASH OPERATIONS
+                    // =========================================================
+                    DbAction::RestoreFromTrash(_) => {
+                        do_global_invalidate = false;
+                        invalidate_after_restore_from_trash(state);
+                    }
+
+                    DbAction::PermanentDelete(_) => {
+                        do_global_invalidate = false;
+                        // Refresh trash list
+                        invalidate_trash(state);
+                    }
+
+                    DbAction::EmptyTrash => {
+                        invalidate_trash(state);
+                        state.show_toast("Trash emptied", ToastKind::Success);
+                    }
+
+                    // =========================================================
+                    // BESTIARY / LOCATIONS: invalidate caches on successful writes
+                    // =========================================================
+                    DbAction::SaveCreature(_, universe_id) => {
+                        do_global_invalidate = false;
+
+                        // Legacy flags + data
+                        state.loaded_creatures_universe = None;
+                        state.creatures.clear();
+
+                        // ✅ FASE 10: abrir compuerta scoped
+                        state.core_creatures_loaded_for.remove(universe_id);
+                        state.core_loading_in_progress.remove(&crate::state::CoreLoadKey::Creatures {
+                            universe_id: universe_id.clone(),
+                        });
+                    }
+
+                    DbAction::ArchiveCreature(_, _) => {
+                        do_global_invalidate = false;
+
+                        // Legacy flags + data
+                        state.loaded_creatures_universe = None;
+                        state.creatures.clear();
+
+                        // ✅ FASE 10: no tenemos universe_id aquí -> abrir compuerta global de creatures
+                        state.core_creatures_loaded_for.clear();
+                        state.core_loading_in_progress.retain(|k| {
+                            !matches!(k, crate::state::CoreLoadKey::Creatures { .. })
+                        });
+                    }
+
+                    DbAction::SaveLocation(l) => {
+                        do_global_invalidate = false;
+
+                        // Legacy flags + data
+                        state.loaded_locations_universe = None;
+                        state.locations.clear();
+
+                        // ✅ FASE 10: abrir compuerta scoped por universe_id del location
+                        state.core_locations_loaded_for.remove(&l.universe_id);
+                        state.core_loading_in_progress.remove(&crate::state::CoreLoadKey::Locations {
+                            universe_id: l.universe_id.clone(),
+                        });
+                    }
+
+                    // --- DEFAULT: keep old behavior ---
+                    _ => {}
+                }
+            }
+
+            if do_global_invalidate {
+                apply_global_invalidate_legacy(state);
+            }
+
+            // Post-success toasts (ONLY when DB confirmed Ok)
+            if let Some(action) = inflight {
+                match action {
+                    // -------------------------
+                    // DEMO
+                    // -------------------------
+                    DbAction::ResetDemoDataScoped(_, scope) => {
+                        let msg = match scope {
+                            DemoResetScope::All => "Demo reset complete: Bestiary(7), Locations(7), Timeline(5 eras/15 events), PM Tools(6 cards)",
+                            DemoResetScope::Timeline => "Timeline reset complete: 5 eras / 15 events",
+                            DemoResetScope::Locations => "Locations reset complete: 7 locations",
+                            DemoResetScope::Bestiary => "Bestiary reset complete: 7 creatures",
+                            DemoResetScope::PmTools => "PM Tools reset complete: 6 cards",
+                        };
+                        state.show_toast(msg, ToastKind::Success);
+                    }
+                    DbAction::InjectDemoData(_) => {
+                        state.show_toast("Demo data injected", ToastKind::Success);
+                    }
+
+                    // -------------------------
+                    // TRASH
+                    // -------------------------
+                    DbAction::MoveToTrash { display_name, .. } => {
+                        state.show_toast(format!("'{}' moved to trash", display_name), ToastKind::Success);
+                    }
+                    DbAction::RestoreFromTrash(_) => {
+                        state.show_toast("Item restored from trash", ToastKind::Success);
+                    }
+
+                    // -------------------------
+                    // BESTIARY
+                    // -------------------------
+                    DbAction::SaveCreature(c, _) => {
+                        state.show_toast(format!("Creature '{}' saved", c.name), ToastKind::Success);
+                    }
+                    DbAction::ArchiveCreature(id, archived) => {
+                        // Try to show a friendly name if it exists in current state
+                        let name = state
+                            .creatures
+                            .iter()
+                            .find(|x| x.id == *id)
+                            .map(|x| x.name.clone())
+                            .unwrap_or_else(|| "Creature".to_string());
+
+                        if archived {
+                            state.show_toast(format!("Creature '{}' archived", name), ToastKind::Success);
+                        } else {
+                            state.show_toast(format!("Creature '{}' restored", name), ToastKind::Success);
+                        }
+                    }
+
+                    // -------------------------
+                    // LOCATIONS
+                    // -------------------------
+                    DbAction::SaveLocation(l) => {
+                        state.show_toast(format!("Location '{}' saved", l.name), ToastKind::Success);
+                    }
+
+                    _ => {}
+                }
+            }
+        }
+
+        Err(e) => {
+            // ✅ Detectar errores de capability deshabilitada y mostrar mensajes claros
+            let msg = if e.contains("disabled in this project") {
+                // Error de capability - mensaje más amigable
+                format!(
+                    "❌ Feature disabled: {}",
+                    e.replace("Capability '", "")
+                        .replace("' is disabled in this project", "")
+                )
+            } else if e.contains("capability") || e.contains("Capability") {
+                // Otro error relacionado con capabilities
+                format!("⚠️ Permission error: {}", e)
+            } else {
+                // Error genérico
+                format!("Action failed: {}", e)
+            };
+
+            state.show_toast(msg, ToastKind::Error);
+        }
+    }
+}
