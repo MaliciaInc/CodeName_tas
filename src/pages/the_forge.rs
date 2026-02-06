@@ -10,22 +10,25 @@
 // 6. Pills mismo tamaño (36px)
 // ============================================
 
-use iced::{Alignment, Border, Element, Length, Padding, Theme, Color, Background};
-use iced::widget::{self, button, column, container, keyed_column, row, scrollable, text, text_editor, text_input, Column, Row, Space, Id};
+use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
+use iced::widget::{
+    self, button, column, container, row, scrollable, text, text_editor, text_input, Column, Id, Row,
+    Space,
+};
+
 use crate::app::{AppState, Message};
 use crate::messages::TheForgeMessage;
+use crate::model::{Chapter, Scene};
 use crate::ui::{self, Tokens};
-use crate::model::Chapter;
-use crate::model::Scene;
-
 
 // --- CONSTANTS ---
 const INDENT_CHAPTER: f32 = 20.0;
 const INDENT_SCENE: f32 = 40.0;
 const PILL_HEIGHT: f32 = 36.0;
+
 // Premium alignment constants
-const STATUS_COL_W: f32 = 64.0;   // "Draft" column width
-const METRIC_COL_W: f32 = 64.0;   // Word count / metric column width (match Draft)
+const STATUS_COL_W: f32 = 64.0; // "Draft" column width
+const METRIC_COL_W: f32 = 64.0; // Word count / metric column width (match Draft)
 
 #[inline]
 fn stable_key(tag: u64, id: &str) -> u64 {
@@ -71,10 +74,10 @@ fn divider(t: Tokens) -> Element<'static, Message> {
 }
 
 fn selection_bar(_t: Tokens, _is_active: bool) -> Element<'static, Message> {
-    // No visual bar at all (premium + clean)
-    iced::widget::Space::new()
-        .width(iced::Length::Fixed(3.0))
-        .height(iced::Length::Fill)
+    // Barra invisible (limpio/premium)
+    Space::new()
+        .width(Length::Fixed(3.0))
+        .height(Length::Fill)
         .into()
 }
 
@@ -82,7 +85,7 @@ fn outline_item_style(t: Tokens, active: bool) -> impl Fn(&Theme, button::Status
     move |_, status| {
         let mut s = button::Style::default();
 
-        // Subtle, premium row backgrounds
+        // Fondos sutiles
         let hover = ui::alpha(Color::WHITE, 0.028);
         let active_bg = ui::alpha(Color::WHITE, 0.050);
         let pressed = ui::alpha(Color::WHITE, 0.070);
@@ -103,7 +106,7 @@ fn outline_item_style(t: Tokens, active: bool) -> impl Fn(&Theme, button::Status
         s.background = Some(bg.into());
         s.text_color = t.foreground;
 
-        // ✅ Kill the "pill" look: no border, smaller radius
+        // Sin borde, radio suave
         s.border = Border {
             color: Color::TRANSPARENT,
             width: 0.0,
@@ -113,7 +116,6 @@ fn outline_item_style(t: Tokens, active: bool) -> impl Fn(&Theme, button::Status
         s
     }
 }
-
 
 fn icon_btn<'a>(t: Tokens, label: &'a str, on_press: Message) -> Element<'a, Message> {
     button(text(label).size(14))
@@ -136,7 +138,7 @@ fn danger_icon_btn<'a>(t: Tokens, label: &'a str, on_press: Message) -> Element<
         .into()
 }
 
-// ✅ ARREGLADO: Estilo para rename input con MÁXIMA VISIBILIDAD
+// Estilo para rename input con máxima visibilidad
 fn rename_input_style(
     t: Tokens,
 ) -> impl Fn(&Theme, iced::widget::text_input::Status) -> iced::widget::text_input::Style {
@@ -145,7 +147,6 @@ fn rename_input_style(
 
         let focused = matches!(status, text_input::Status::Focused { .. });
 
-        // Dark, subtle, premium inline edit
         let bg = ui::alpha(Color::WHITE, if focused { 0.06 } else { 0.03 });
         let border = if focused {
             ui::alpha(t.accent, 0.35)
@@ -181,12 +182,11 @@ fn rename_input<'a>(
         .on_input(on_input)
         .on_submit(on_submit)
         .size(13)
-        .padding([0, 2]) // 👈 mucho más compacto
+        .padding([0, 2]) // compacto
         .width(Length::Fill)
         .style(rename_input_style(t))
         .into()
 }
-
 
 // --- TREE ITEMS ---
 
@@ -215,10 +215,14 @@ fn novel_row<'a>(
             Message::TheForge(TheForgeMessage::EndRename),
         )
     } else {
-        // ✅ Importante: String "propio" para evitar caches raros con &str prestado en Iced
-        text(format!("{}", title))
+        // String propio para evitar caches raros con &str prestado
+        text(format!("{title}"))
             .size(13)
-            .color(if is_active { t.foreground } else { ui::alpha(t.muted_fg, 0.85) })
+            .color(if is_active {
+                t.foreground
+            } else {
+                ui::alpha(t.muted_fg, 0.85)
+            })
             .width(Length::Fill)
             .into()
     };
@@ -244,10 +248,15 @@ fn novel_row<'a>(
             .into()
     };
 
+    // Minimiza clones: usamos uno para delete sin duplicar lógica
     let nid = novel_id.clone();
 
     let buttons_row = row![
-        icon_btn(t, "+", Message::TheForge(TheForgeMessage::CreateChapter(novel_id))),
+        icon_btn(
+            t,
+            "+",
+            Message::TheForge(TheForgeMessage::CreateChapter(novel_id)),
+        ),
         danger_icon_btn(t, "×", Message::TheForge(TheForgeMessage::DeleteNovel(nid))),
     ]
         .spacing(6)
@@ -259,7 +268,6 @@ fn novel_row<'a>(
         .into()
 }
 
-
 fn chapter_row<'a>(
     t: Tokens,
     title: &'a str,
@@ -268,34 +276,46 @@ fn chapter_row<'a>(
     is_active: bool,
     is_expanded: bool,
     is_renaming: bool,
+    outline_nonce: u32, // CANARIO + NUDGE: fuerza cambio real en shaping/cache
 ) -> Element<'a, Message> {
     let bar = selection_bar(t, is_active);
 
     let expand_btn = icon_btn(
         t,
         if is_expanded { "−" } else { "+" },
-        // ✅ ToggleChapter solo acepta chapter_id
         Message::TheForge(TheForgeMessage::ToggleChapter(chapter_id.clone())),
     );
 
     let title_widget: Element<Message> = if is_renaming {
         rename_input(
             t,
-            // ✅ Iced 0.14: Id::new espera &str (en tu build). Usamos Id fijo porque solo hay 1 rename activo.
             Id::new("forge_chapter_rename"),
             title,
             |s| Message::TheForge(TheForgeMessage::ChapterTitleChanged(s)),
             Message::TheForge(TheForgeMessage::EndRename),
         )
     } else {
-        // ✅ Igual que Novel/Scene: String propio para evitar cache raro en Windows/Iced.
-        text(format!("{}", title))
+        // 🧨 CANARIO VISUAL + LAYOUT NUDGE (industrial):
+        // Alterna un caracter invisible para forzar “text shaping” distinto.
+        let nudge = if (outline_nonce & 1) == 0 {
+            '\u{200B}'
+        } else {
+            '\u{200C}'
+        };
+
+        // Canario: útil para verificar si el frame se dibuja realmente.
+        let label = format!("{title}{nudge}  ·{}", outline_nonce);
+
+        text(label)
             .size(13)
-            .color(if is_active { t.foreground } else { ui::alpha(t.muted_fg, 0.85) })
+            .color(if is_active {
+                t.foreground
+            } else {
+                ui::alpha(t.muted_fg, 0.85)
+            })
             .width(Length::Fill)
             .into()
     };
-
 
     let status_text: Element<Message> = container(
         text(status)
@@ -307,12 +327,11 @@ fn chapter_row<'a>(
         .align_x(Alignment::End)
         .into();
 
-    // Estructura del row SIEMPRE igual
     let content_row = row![bar, expand_btn, title_widget, status_text]
         .spacing(10)
         .align_y(Alignment::Center);
 
-    // MAIN siempre es Button (sin cambiar tipo de widget)
+    // MAIN siempre button (mismo tipo de widget)
     let mut main_btn = button(content_row)
         .width(Length::Fill)
         .padding([6, 10])
@@ -326,23 +345,30 @@ fn chapter_row<'a>(
 
     let main: Element<Message> = main_btn.into();
 
-    // Controles: opcionalmente inertes mientras renombrás
     let create_btn: Element<Message> = if is_renaming {
         button(text("+").size(14))
             .padding([4, 8])
             .style(ui::ghost_button_style(t))
             .into()
     } else {
-        icon_btn(t, "+", Message::TheForge(TheForgeMessage::CreateScene(chapter_id.clone())))
+        icon_btn(
+            t,
+            "+",
+            Message::TheForge(TheForgeMessage::CreateScene(chapter_id.clone())),
+        )
     };
 
     let delete_btn: Element<Message> = if is_renaming {
         button(text("×").size(14))
             .padding([4, 8])
-            .style(ui::ghost_button_style(Tokens { accent: Color::from_rgb(0.95, 0.4, 0.4), ..t }))
+            .style(ui::ghost_button_style(t))
             .into()
     } else {
-        danger_icon_btn(t, "×", Message::TheForge(TheForgeMessage::DeleteChapter(chapter_id.clone())))
+        danger_icon_btn(
+            t,
+            "×",
+            Message::TheForge(TheForgeMessage::DeleteChapter(chapter_id.clone())),
+        )
     };
 
     let buttons_row = row![create_btn, delete_btn]
@@ -381,26 +407,26 @@ fn scene_row<'a>(
             Message::TheForge(TheForgeMessage::EndRename),
         )
     } else {
-        // ✅ Importante: String "propio" para evitar caches raros con &str prestado en Iced
-        text(format!("{}", title))
+        text(format!("{title}"))
             .size(13)
-            .color(if is_active { t.foreground } else { ui::alpha(t.muted_fg, 0.85) })
+            .color(if is_active {
+                t.foreground
+            } else {
+                ui::alpha(t.muted_fg, 0.85)
+            })
             .width(Length::Fill)
             .into()
     };
 
-    // Word count as plain muted text (NOT a pill)
-    let wc_text: Element<Message> = text(format!("{}", word_count))
+    // Word count como texto simple (no pill)
+    let wc_text: Element<Message> = text(format!("{word_count}"))
         .size(11)
         .color(ui::alpha(t.muted_fg, 0.55))
         .width(Length::Fixed(METRIC_COL_W))
         .into();
 
     let content_row = if is_renaming {
-        // When renaming, give the input the same breathing room as novels/chapters
-        row![bar, title_widget]
-            .spacing(10)
-            .align_y(Alignment::Center)
+        row![bar, title_widget].spacing(10).align_y(Alignment::Center)
     } else {
         row![bar, title_widget, wc_text]
             .spacing(10)
@@ -422,10 +448,10 @@ fn scene_row<'a>(
             .into()
     };
 
-    let sid = scene_id.clone();
+    let sid = scene_id;
 
     let buttons_row = row![
-        // No "+" here (scenes are leaves), keep only delete
+        // Scenes son hoja: solo delete
         danger_icon_btn(t, "×", Message::TheForge(TheForgeMessage::DeleteScene(sid))),
     ]
         .spacing(6)
@@ -444,19 +470,17 @@ fn scene_row<'a>(
         .into()
 }
 
-
 // --- MAIN VIEW ---
 
 pub fn the_forge<'a>(state: &'a AppState, t: Tokens) -> Element<'a, Message> {
-    // ✅ FIX: Forzar que Iced detecte cambios en el outline
+    // ✅ FIX: Forzar que Iced detecte cambios en el outline (lectura intencional)
     let _ = state.forge_outline_version;
 
-    let is_renaming_any =
-        state.forge_renaming_novel_id.is_some()
-            || state.forge_renaming_chapter_id.is_some()
-            || state.forge_renaming_scene_id.is_some();
+    let is_renaming_any = state.forge_renaming_novel_id.is_some()
+        || state.forge_renaming_chapter_id.is_some()
+        || state.forge_renaming_scene_id.is_some();
 
-    // ✅ FIX REAL (Iced 0.14): keyed_column para continuidad estable por item
+    // Construimos la lista de hijos del outline
     let mut outline_children: Vec<(u64, Element<'a, Message>)> = Vec::new();
 
     // Renderizar Novels
@@ -466,19 +490,20 @@ pub fn the_forge<'a>(state: &'a AppState, t: Tokens) -> Element<'a, Message> {
 
         let is_current_novel = state.active_novel_id.as_ref() == Some(&novel.id);
 
-        let is_active_novel = is_current_novel
-            && !has_chapter_selected
-            && !has_scene_selected;
+        let is_active_novel = is_current_novel && !has_chapter_selected && !has_scene_selected;
 
         let is_expanded = state.expanded_novels.contains(&novel.id);
         let is_renaming_novel = state.forge_renaming_novel_id.as_ref() == Some(&novel.id);
 
+        // ✅ Menos clones: clonamos el id una vez por novela
+        let novel_id = novel.id.clone();
+
         outline_children.push((
-            stable_key(1, &novel.id),
+            stable_key(1, &novel_id),
             novel_row(
                 t,
                 &novel.title,
-                novel.id.clone(),
+                novel_id,
                 is_active_novel,
                 is_expanded,
                 is_renaming_novel,
@@ -493,51 +518,57 @@ pub fn the_forge<'a>(state: &'a AppState, t: Tokens) -> Element<'a, Message> {
                 .unwrap_or(&[]);
 
             for chapter in chapters {
-                let is_active_chapter = state.active_chapter_id.as_ref() == Some(&chapter.id);
+                // ✅ Menos clones: clonamos una vez por capítulo (y lo reutilizamos)
+                let chapter_id = chapter.id.clone();
 
-                let is_chapter_expanded = state.expanded_chapters.contains(&chapter.id);
+                let is_active_chapter = state.active_chapter_id.as_ref() == Some(&chapter_id);
+                let is_chapter_expanded = state.expanded_chapters.contains(&chapter_id);
                 let is_renaming_chapter =
-                    state.forge_renaming_chapter_id.as_ref() == Some(&chapter.id);
+                    state.forge_renaming_chapter_id.as_ref() == Some(&chapter_id);
 
-                // ✅ DEBUG: Ver qué título se está renderizando
+                // DEBUG: ver qué título se está renderizando
                 crate::logger::info(&format!(
                     "   🎨 RENDER chapter {} title='{}'",
-                    chapter.id, chapter.title
+                    chapter_id, chapter.title
                 ));
 
                 outline_children.push((
-                    // 🔥 Key versionada: si el outline_version sube, este row se reconstruye sí o sí
-                    stable_key_v(2, &chapter.id, state.forge_outline_version as u64),
+                    // Key versionada: si outline_version sube, este row se reconstruye sí o sí
+                    stable_key_v(2, &chapter_id, state.forge_outline_version as u64),
                     chapter_row(
                         t,
                         &chapter.title,
                         &chapter.status,
-                        chapter.id.clone(),
+                        chapter_id.clone(),
                         is_active_chapter,
                         is_chapter_expanded,
                         is_renaming_chapter,
+                        state.forge_outline_version,
                     ),
                 ));
 
                 if is_chapter_expanded {
                     let scenes: &[Scene] = state
                         .scenes_by_chapter_id
-                        .get(&chapter.id)
+                        .get(&chapter_id)
                         .map(|v| v.as_slice())
                         .unwrap_or(&[]);
 
                     for scene in scenes {
-                        let is_active_scene = state.active_scene_id.as_ref() == Some(&scene.id);
+                        // ✅ Menos clones: clonamos una vez por escena
+                        let scene_id = scene.id.clone();
+
+                        let is_active_scene = state.active_scene_id.as_ref() == Some(&scene_id);
                         let is_renaming_scene =
-                            state.forge_renaming_scene_id.as_ref() == Some(&scene.id);
+                            state.forge_renaming_scene_id.as_ref() == Some(&scene_id);
 
                         outline_children.push((
-                            stable_key(3, &scene.id),
+                            stable_key(3, &scene_id),
                             scene_row(
                                 t,
                                 &scene.title,
                                 scene.word_count,
-                                scene.id.clone(),
+                                scene_id,
                                 is_active_scene,
                                 is_renaming_scene,
                             ),
@@ -548,36 +579,44 @@ pub fn the_forge<'a>(state: &'a AppState, t: Tokens) -> Element<'a, Message> {
         }
     }
 
-    // ✅ Click en espacio vacío del outline = guardar rename (EndRename)
+    // Click en espacio vacío del outline = guardar rename (EndRename)
     if is_renaming_any {
         let spacer: Element<'a, Message> = iced::widget::Button::new(
-            iced::widget::Space::new()
-                .height(iced::Length::Fixed(200.0))
-                .width(iced::Length::Fill),
+            Space::new()
+                .height(Length::Fixed(200.0))
+                .width(Length::Fill),
         )
             .style(|_, _| iced::widget::button::Style {
                 background: None,
-                text_color: iced::Color::TRANSPARENT,
-                border: iced::Border {
-                    color: iced::Color::TRANSPARENT,
+                text_color: Color::TRANSPARENT,
+                border: Border {
+                    color: Color::TRANSPARENT,
                     width: 0.0,
                     radius: 0.0.into(),
                 },
                 shadow: iced::Shadow::default(),
                 snap: false,
             })
-            .on_press(Message::TheForge(crate::messages::TheForgeMessage::EndRename))
+            .on_press(Message::TheForge(TheForgeMessage::EndRename))
             .into();
 
         outline_children.push((stable_key(9, "outline_rename_spacer"), spacer));
     }
 
-    // 🔥 BULLDOZER: NO usamos keyed_column aquí.
-    // Construimos un Column normal para evitar reuse/caching por keys en Windows (wgpu).
+    // 🔥 BULLDOZER:
+    // Column normal para evitar reuse/caching por keys en Windows (wgpu).
     let mut outline = Column::new().spacing(2);
     for (_k, child) in outline_children {
         outline = outline.push(child);
     }
+
+    // 🧨 INVALIDACIÓN DE VIEWPORT:
+    // Toggle del Id cuando cambia outline_version => fuerza rebuild del scrollable
+    let outline_scroll_id = if (state.forge_outline_version & 1) == 0 {
+        "forge_outline_scroll_a"
+    } else {
+        "forge_outline_scroll_b"
+    };
 
     let outline_section = Column::new()
         .spacing(8)
@@ -588,9 +627,7 @@ pub fn the_forge<'a>(state: &'a AppState, t: Tokens) -> Element<'a, Message> {
                 .push(icon_btn(t, "+", Message::TheForge(TheForgeMessage::CreateNovel))),
         )
         .push(divider(t))
-        // ✅ Preservar scroll state aunque el árbol se regenere
-        .push(scrollable(outline).id(Id::new("forge_outline_scroll")).height(Length::Fill));
-
+        .push(scrollable(outline).id(Id::new(outline_scroll_id)).height(Length::Fill));
 
     let outline_panel = container(outline_section)
         .padding(16)
@@ -604,7 +641,7 @@ pub fn the_forge<'a>(state: &'a AppState, t: Tokens) -> Element<'a, Message> {
             s
         });
 
-    // ✅ Editor con área de texto más clara
+    // Editor
     let editor_content = if state.active_scene_id.is_some() {
         column![
             Row::new()
@@ -617,7 +654,7 @@ pub fn the_forge<'a>(state: &'a AppState, t: Tokens) -> Element<'a, Message> {
                 .height(Length::Fill)
                 .style(move |theme: &Theme, status| {
                     let mut s = ui::text_editor_style(t)(theme, status);
-                    // ✅ Área de texto más clara (0.7 vs 0.5 del outline)
+                    // Área de texto más clara
                     s.background = Background::Color(ui::alpha(t.shell_a, 0.7));
                     s
                 })
@@ -629,10 +666,14 @@ pub fn the_forge<'a>(state: &'a AppState, t: Tokens) -> Element<'a, Message> {
                 .align_y(Alignment::Center)
                 .push(text("Editor").size(12).color(t.muted_fg).width(Length::Fill)),
             divider(t),
-            container(text("Select a scene to start writing").size(14).color(ui::alpha(t.muted_fg, 0.6)))
-                .padding(32)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
+            container(
+                text("Select a scene to start writing")
+                    .size(14)
+                    .color(ui::alpha(t.muted_fg, 0.6))
+            )
+            .padding(32)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
         ]
             .spacing(8)
     };
