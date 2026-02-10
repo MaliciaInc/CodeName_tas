@@ -1,7 +1,7 @@
 use crate::app::{AppState, UniverseMessage};
 use crate::state::{DbAction, ToastKind};
-use uuid::Uuid;
 use crate::state::ConfirmAction;
+use uuid::Uuid;
 
 pub fn update(state: &mut AppState, message: UniverseMessage) {
     match message {
@@ -23,7 +23,8 @@ pub fn update(state: &mut AppState, message: UniverseMessage) {
 
         UniverseMessage::Delete(id) => {
             state.pending_confirm = Some(ConfirmAction::DeleteUniverse(id));
-            state.show_toast("Universe deleted", ToastKind::Info);
+            // Esto NO está borrando aún; solo pide confirmación.
+            state.show_toast("Confirm delete universe?", ToastKind::Info);
         }
 
         UniverseMessage::Open(id) => {
@@ -55,14 +56,12 @@ pub fn update(state: &mut AppState, message: UniverseMessage) {
         UniverseMessage::SnapshotCreate(universe_id) => {
             let name = state.snapshot_name.trim().to_string();
             if !name.is_empty() {
-                // ✅ FASE 10: invalidación real del contrato Core (loaded_for + in_progress + flag legacy)
+                // ✅ invalidación del contrato Core (loaded_for + in_progress + flag legacy)
                 state.loaded_snapshots_universe = None;
                 state.core_snapshots_loaded_for.remove(&universe_id);
-                state
-                    .core_loading_in_progress
-                    .remove(&crate::state::CoreLoadKey::Snapshots {
-                        universe_id: universe_id.clone(),
-                    });
+                state.core_loading_in_progress.remove(&crate::state::CoreLoadKey::Snapshots {
+                    universe_id: universe_id.clone(),
+                });
 
                 state.queue(DbAction::SnapshotCreate { universe_id, name });
                 state.snapshot_name.clear();
@@ -71,17 +70,27 @@ pub fn update(state: &mut AppState, message: UniverseMessage) {
         }
 
         UniverseMessage::SnapshotRefresh(universe_id) => {
-            // ✅ FASE 10: refresh debe abrir compuerta sí o sí
+            let now = std::time::Instant::now();
+
+            // Throttle simple: evita spam de refresh
+            if now
+                .duration_since(state.last_snapshots_reload)
+                .as_millis()
+                < 800
+            {
+                state.debug_record_ignored("Snapshots throttled (too soon)");
+                return;
+            }
+
+            state.last_snapshots_reload = now;
+
+            // ✅ Este controller es puro: aquí NO hay db/tasks.
+            // Señalamos stale para que el orquestador (root/app) dispare el fetch.
+            // También limpiamos loaded_for para evitar que una ruta vieja bloquee el refresh.
             state.loaded_snapshots_universe = None;
             state.core_snapshots_loaded_for.remove(&universe_id);
-            state
-                .core_loading_in_progress
-                .remove(&crate::state::CoreLoadKey::Snapshots {
-                    universe_id: universe_id.clone(),
-                });
 
-            state.show_toast("Refreshing snapshots...", ToastKind::Info);
-            state.route = crate::app::Route::UniverseDetail { universe_id };
+            state.debug_record_ignored("Snapshots refresh requested (needs orchestration)");
         }
 
         UniverseMessage::SnapshotRestore(snapshot_id) => {
@@ -92,7 +101,7 @@ pub fn update(state: &mut AppState, message: UniverseMessage) {
             state.loaded_snapshots_universe = None;
 
             // Nota: acá no tenemos universe_id para invalidar scoped CoreLoadKey::Snapshots.
-            // La limpieza fuerte ya se hace en ActionDone/RestoreFromTrash/etc. (y el fetch guardado evita out-of-order).
+            // La limpieza fuerte ya se hace donde confirmás acciones (ActionDone).
             state.queue(DbAction::SnapshotRestore { snapshot_id });
             state.show_toast("Restoring snapshot...", ToastKind::Info);
         }
@@ -102,7 +111,7 @@ pub fn update(state: &mut AppState, message: UniverseMessage) {
             let sid = snapshot_id.clone();
             state.snapshots.retain(|s| s.id != sid);
 
-            // ✅ FASE 10: sin universe_id no podemos limpiar CoreLoadKey::Snapshots scoped.
+            // ✅ sin universe_id no podemos limpiar CoreLoadKey::Snapshots scoped.
             // Igual marcamos stale el flag legacy; la invalidación fuerte se hace cuando DB confirma (ActionDone).
             state.loaded_snapshots_universe = None;
 
@@ -111,7 +120,7 @@ pub fn update(state: &mut AppState, message: UniverseMessage) {
         }
 
         UniverseMessage::ValidateUniverse(_universe_id) => {
-            // We will fetch issues via root_controller task (not queued) to avoid breaking inflight clearing.
+            // Fetch issues via root_controller task (not queued) to avoid breaking inflight clearing.
             state.integrity_busy = true;
         }
     }

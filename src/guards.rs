@@ -196,20 +196,6 @@ pub async fn check_capability(
     Ok(())
 }
 
-/// REFRESH: Úsalo si el usuario cambia la configuración en caliente
-pub async fn reload_cache(
-    pool: &SqlitePool,
-    cache: &CapabilitiesCache,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let new_caps = fetch_capabilities_from_db(pool).await?;
-
-    let mut caps_lock = cache.write().await;
-    *caps_lock = new_caps;
-
-    crate::logger::info("🔄 Capabilities cache reloaded");
-    Ok(())
-}
-
 /// Helper: Crear cache inicial vacío (antes de cargar DB)
 pub fn create_empty_cache() -> Arc<RwLock<Capabilities>> {
     // Fail-closed default: everything disabled until proven enabled by DB

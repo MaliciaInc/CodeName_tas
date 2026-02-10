@@ -9,6 +9,7 @@ use crate::messages::TheForgeMessage;
 use crate::state::DbAction;
 use crate::state::ConfirmAction;
 
+
 const AUTOSAVE_DELAY_MS: u64 = 800;
 
 // ============================================
@@ -326,6 +327,22 @@ pub fn update(state: &mut AppState, message: TheForgeMessage) -> Option<Task<Mes
                 return None;
             }
 
+            // ✅ DEBOUNCING: Prevenir clicks múltiples (igual que CreateNovel/CreateScene)
+            let now_i = std::time::Instant::now();
+            let elapsed = now_i
+                .duration_since(state.last_create_chapter_time)
+                .as_millis();
+
+            if elapsed < 1000 {
+                crate::logger::warn(&format!(
+                    "   ⚠️ CreateChapter ignored (debouncing: {}ms)",
+                    elapsed
+                ));
+                return None;
+            }
+
+            state.last_create_chapter_time = now_i;
+
             // ✅ Posición basada en el árbol (si existe), fallback al active list.
             let pos: i64 = state
                 .chapters_by_novel_id
@@ -341,9 +358,9 @@ pub fn update(state: &mut AppState, message: TheForgeMessage) -> Option<Task<Mes
                 id: chapter_id.clone(),
                 novel_id: novel_id.clone(),
                 title: title.clone(),
-                synopsis: String::new(), // ✅ antes era notes, pero tu struct usa synopsis
+                synopsis: String::new(),
                 status: "draft".to_string(),
-                position: pos, // ✅ i64
+                position: pos,
                 created_at: now,
                 updated_at: now,
             };
@@ -648,11 +665,30 @@ pub fn update(state: &mut AppState, message: TheForgeMessage) -> Option<Task<Mes
 
             // Single click - cargar scene si no es la actual
             if !is_current {
+                // 1) Guardar antes de cambiar (DB)
+                auto_save_before_switch(state);
+
                 state.active_scene_id = Some(id.clone());
+
+                // 2) Cargar desde DB/cache primero (baseline)
                 if let Some(scene) = state.active_chapter_scenes.iter().find(|s| s.id == id) {
                     state.forge_content = text_editor::Content::with_text(&scene.body);
                 }
                 cancel_debounce(state);
+
+                // 3) Intentar restaurar draft local en background
+                let scene_id_for_task = id.clone();
+                let scene_id_for_msg = scene_id_for_task.clone();
+
+                return Some(Task::perform(
+                    async move {
+                        crate::forge_draft::read_draft(&scene_id_for_task).await
+                    },
+                    move |res| Message::TheForge(TheForgeMessage::DraftLoaded {
+                        scene_id: scene_id_for_msg,
+                        result: res,
+                    }),
+                ));
             }
 
             // Limpiar estado de rename
@@ -743,16 +779,108 @@ pub fn update(state: &mut AppState, message: TheForgeMessage) -> Option<Task<Mes
         }
 
         TheForgeMessage::DebounceComplete(completed_id) => {
-            if state.forge_debounce_task_id == Some(completed_id) {
-                if let Some(last_edit) = state.forge_last_edit {
-                    if Instant::now().duration_since(last_edit).as_millis() >= AUTOSAVE_DELAY_MS as u128 {
-                        if let Some(scene_id) = &state.active_scene_id {
-                            if let Some(scene) = state.active_chapter_scenes.iter().find(|s| s.id == *scene_id).cloned() {
-                                state.queue(DbAction::UpdateScene(scene));
-                                state.forge_debounce_task_id = None;
+            if state.forge_debounce_task_id != Some(completed_id) {
+                return None;
+            }
+
+            let Some(last_edit) = state.forge_last_edit else {
+                return None;
+            };
+
+            if Instant::now()
+                .duration_since(last_edit)
+                .as_millis()
+                < AUTOSAVE_DELAY_MS as u128
+            {
+                return None;
+            }
+
+            let Some(scene_id) = state.active_scene_id.clone() else {
+                return None;
+            };
+
+            // Buscar scene actual (mutable o inmutable da igual aquí; vamos a persistir una copia)
+            let Some(scene) = state
+                .active_chapter_scenes
+                .iter()
+                .find(|s| s.id == scene_id)
+                .cloned()
+            else {
+                return None;
+            };
+
+            // 1) Guardar a DB (tu comportamiento actual)
+            state.queue(DbAction::UpdateScene(scene));
+
+            // 2) Guardar draft local (background)
+            // Nota: no bloquea UI. Si falla, no matamos el flujo.
+            let body = state.forge_content.text();
+
+            // OJO: body puede ser grande. Lo movemos al future (sin clones extra).
+            let scene_id_for_task = scene_id.clone();
+            let scene_id_for_msg = scene_id;
+
+            return Some(Task::perform(
+                async move {
+                    crate::forge_draft::write_draft(&scene_id_for_task, &body).await
+                },
+                move |res| Message::TheForge(TheForgeMessage::DraftSaved {
+                    scene_id: scene_id_for_msg,
+                    result: res,
+                }),
+            ));
+        }
+
+        TheForgeMessage::DraftLoaded { scene_id, result } => {
+            match result {
+                Ok(Some(draft_body)) => {
+                    // Solo aplicamos si todavía estamos en esa escena (evita race)
+                    if state.active_scene_id.as_ref() == Some(&scene_id) {
+                        // Si difiere del body actual, restauramos
+                        let current = state.forge_content.text();
+                        if current != draft_body {
+                            state.forge_content = text_editor::Content::with_text(&draft_body);
+
+                            // Mantener coherencia con el Scene en memoria (para que el siguiente autosave a DB no “rebote”)
+                            if let Some(scene) = state
+                                .active_chapter_scenes
+                                .iter_mut()
+                                .find(|s| s.id == scene_id)
+                            {
+                                scene.body = draft_body;
+                                scene.word_count = count_words(&scene.body);
                             }
+
+                            crate::logger::info("🧩 Draft local restaurado para escena activa");
                         }
                     }
+                }
+                Ok(None) => {
+                    // No hay draft, todo bien.
+                }
+                Err(e) => {
+                    crate::logger::warn(&format!("⚠️ DraftLoaded falló: {e}"));
+                }
+            }
+            None
+        }
+
+        TheForgeMessage::DraftSaved { scene_id, result } => {
+            match result {
+                Ok(()) => {
+                    // No es hot-path (ocurre al guardar). Útil para trazabilidad.
+                    state.debug_push(
+                        crate::state::DebugEventKind::Info,
+                        format!("💾 draft guardado para scene {}", scene_id),
+                    );
+                }
+                Err(e) => {
+                    // Si querés cero heap churn hasta aquí también, cambiamos logger para aceptar fmt::Arguments.
+                    crate::logger::warn(&format!("⚠️ DraftSaved falló (scene {}): {}", scene_id, e));
+                    state.debug_push(
+                        crate::state::DebugEventKind::Warn,
+                        format!("⚠️ DraftSaved falló (scene {}): {}", scene_id, e),
+                    );
                 }
             }
             None

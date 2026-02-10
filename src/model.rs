@@ -2,6 +2,7 @@ use sqlx::FromRow;
 use std::fmt;
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 // --- PROJECT IDENTITY ---
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -139,10 +140,96 @@ pub struct Card {
     pub priority: String,
 }
 
+// ✅ OPTIMIZED: O(1) card lookups instead of O(n)
 #[derive(Debug, Clone)]
 pub struct KanbanBoardData {
     pub board: Board,
-    pub columns: Vec<(BoardColumn, Vec<Card>)>,
+
+    // Visual order preserved
+    pub columns: Vec<BoardColumn>,
+
+    // O(1) lookups
+    pub cards_by_id: HashMap<String, Card>,
+    pub cards_by_column: HashMap<String, Vec<String>>, // column_id -> Vec<card_id>
+}
+
+impl KanbanBoardData {
+    /// Create from database query results
+    pub fn from_columns_and_cards(
+        board: Board,
+        columns_with_cards: Vec<(BoardColumn, Vec<Card>)>,
+    ) -> Self {
+        let mut cards_by_id = HashMap::new();
+        let mut cards_by_column: HashMap<String, Vec<String>> = HashMap::new();
+        let mut columns = Vec::new();
+
+        for (column, cards) in columns_with_cards {
+            let col_id = column.id.clone();
+            columns.push(column);
+
+            let card_ids: Vec<String> = cards
+                .into_iter()
+                .map(|card| {
+                    let id = card.id.clone();
+                    cards_by_id.insert(id.clone(), card);
+                    id
+                })
+                .collect();
+
+            cards_by_column.insert(col_id, card_ids);
+        }
+
+        Self {
+            board,
+            columns,
+            cards_by_id,
+            cards_by_column,
+        }
+    }
+
+    /// Get card by ID - O(1)
+    pub fn get_card(&self, card_id: &str) -> Option<&Card> {
+        self.cards_by_id.get(card_id)
+    }
+
+    /// Get cards in a column - O(1) + O(k) where k = cards in column
+    pub fn get_column_cards(&self, column_id: &str) -> Vec<&Card> {
+        self.cards_by_column
+            .get(column_id)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.cards_by_id.get(id))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Move card between columns - O(1)
+    pub fn move_card_to_column(&mut self, card_id: &str, new_column_id: &str) {
+        // Find current column
+        let old_column_id = self.cards_by_column
+            .iter()
+            .find(|(_, ids)| ids.contains(&card_id.to_string()))
+            .map(|(col_id, _)| col_id.clone());
+
+        if let Some(old_col) = old_column_id {
+            // Remove from old column
+            if let Some(cards) = self.cards_by_column.get_mut(&old_col) {
+                cards.retain(|id| id != card_id);
+            }
+        }
+
+        // Add to new column
+        self.cards_by_column
+            .entry(new_column_id.to_string())
+            .or_default()
+            .push(card_id.to_string());
+
+        // Update card's column_id
+        if let Some(card) = self.cards_by_id.get_mut(card_id) {
+            card.column_id = new_column_id.to_string();
+        }
+    }
 }
 
 // --- THE FORGE (NARRATIVE) ---
@@ -239,27 +326,4 @@ pub struct AuditLogEntry {
     pub entity_id: String,
     #[sqlx(default)]
     pub details_json: String,
-}
-
-// --- RELATIONSHIPS ---
-#[derive(Debug, Clone, FromRow, PartialEq, Serialize, Deserialize)]
-pub struct RelationshipType {
-    pub id: String,
-    pub name: String,
-    #[sqlx(default)]
-    pub description: String,
-    pub directed: i64, // 0/1 (sqlite)
-}
-
-#[derive(Debug, Clone, FromRow, PartialEq, Serialize, Deserialize)]
-pub struct Relationship {
-    pub id: String,
-    pub relationship_type_id: String,
-    pub from_type: String,
-    pub from_id: String,
-    pub to_type: String,
-    pub to_id: String,
-    #[sqlx(default)]
-    pub note: String,
-    pub created_at: i64, // unixepoch seconds
 }

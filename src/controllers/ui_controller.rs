@@ -218,7 +218,7 @@ impl App {
 
         // 6) Global input translation
         if let Some(extra) =
-            crate::controllers::input_controller::translate_global_event(&self.state, &message)
+            crate::controllers::input_controller::translate_global_event(&mut self.state, &message)
         {
             let mut extra_tasks =
                 crate::controllers::messages_controller::update(&mut self.state, extra);

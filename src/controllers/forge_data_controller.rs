@@ -82,11 +82,15 @@ pub fn load_chapters_if_needed(
     if state.active_novel_id.as_ref() != Some(&novel_id) {
         state.debug_push(
             crate::state::DebugEventKind::Warn,
-            format!("🫥 skip load_chapters: novel_id={} no es activo (active={:?})", novel_id, state.active_novel_id),
+            format!(
+                "🫥 skip load_chapters: novel_id={} no es activo (active={:?})",
+                novel_id, state.active_novel_id
+            ),
         );
         return tasks;
     }
 
+    // 1 clone total: uno para el key (gating). El String original lo movemos a async/Message.
     let key = ForgeLoadKey::Chapters {
         novel_id: novel_id.clone(),
     };
@@ -133,15 +137,13 @@ pub fn load_chapters_if_needed(
     ));
 
     let db = db.clone();
+
+    // Hacemos 1 solo clone para el async; el original lo movemos al Message (FnOnce).
     let nid_for_async = novel_id.clone();
-    let nid_for_msg = novel_id.clone();
 
     tasks.push(Task::perform(
         async move { db.get_chapters(nid_for_async).await.map_err(|e| e.to_string()) },
-        move |result| Message::ForgeChaptersFetched {
-            novel_id: nid_for_msg.clone(),
-            result,
-        },
+        move |result| Message::ForgeChaptersFetched { novel_id, result },
     ));
 
     tasks
@@ -171,11 +173,15 @@ pub fn load_scenes_if_needed(
     if state.active_chapter_id.as_ref() != Some(&chapter_id) {
         state.debug_push(
             crate::state::DebugEventKind::Warn,
-            format!("🫥 skip load_scenes: chapter_id={} no es activo (active={:?})", chapter_id, state.active_chapter_id),
+            format!(
+                "🫥 skip load_scenes: chapter_id={} no es activo (active={:?})",
+                chapter_id, state.active_chapter_id
+            ),
         );
         return tasks;
     }
 
+    // 1 clone total (igual que chapters)
     let key = ForgeLoadKey::Scenes {
         chapter_id: chapter_id.clone(),
     };
@@ -222,17 +228,14 @@ pub fn load_scenes_if_needed(
     ));
 
     let db = db.clone();
-    let cid_for_async = chapter_id.clone();
-    let cid_for_msg = chapter_id.clone();
 
-    // ✅ PRO: emitimos ForgeScenesFetched con chapter_id para poder ignorar respuestas tardías (out-of-order)
+    let cid_for_async = chapter_id.clone();
+
     tasks.push(Task::perform(
         async move { db.get_scenes(cid_for_async).await.map_err(|e| e.to_string()) },
-        move |result| Message::ForgeScenesFetched {
-            chapter_id: cid_for_msg.clone(),
-            result,
-        },
+        move |result| Message::ForgeScenesFetched { chapter_id, result },
     ));
+
     tasks
 }
 
@@ -286,36 +289,6 @@ pub fn invalidate_scenes_cache(state: &mut AppState, chapter_id: &str) {
         chapter_id: chapter_id.to_string(),
     });
 
-    state.last_scenes_reload = std::time::Instant::now()
-        - std::time::Duration::from_millis(SCENES_THROTTLE_MS as u64 + 1);
-}
-
-// =========================
-// RESET TOTAL (al cambiar universe / salir de Forge)
-// =========================
-pub fn reset_all_data(state: &mut AppState) {
-    crate::logger::info("🧹 ForgeDataController: Resetting all Forge data");
-
-    state.novels.clear();
-    state.active_novel_chapters.clear();
-    state.active_chapter_scenes.clear();
-
-    state.active_novel_id = None;
-    state.active_chapter_id = None;
-    state.active_scene_id = None;
-
-    state.expanded_novels.clear();
-    state.expanded_chapters.clear();
-
-    state.forge_chapters_loaded_for.clear();
-    state.forge_scenes_loaded_for.clear();
-    state.forge_loading_in_progress.clear();
-
-    // “Permití recarga inmediata” si el usuario entra de nuevo
-    state.last_novels_reload = std::time::Instant::now()
-        - std::time::Duration::from_millis(NOVELS_THROTTLE_MS as u64 + 1);
-    state.last_chapters_reload = std::time::Instant::now()
-        - std::time::Duration::from_millis(CHAPTERS_THROTTLE_MS as u64 + 1);
     state.last_scenes_reload = std::time::Instant::now()
         - std::time::Duration::from_millis(SCENES_THROTTLE_MS as u64 + 1);
 }

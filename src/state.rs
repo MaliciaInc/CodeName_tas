@@ -6,7 +6,7 @@ use crate::model::{
     Creature, Universe, Card, KanbanBoardData, Board, Location, TimelineEvent, TimelineEra, Project, UniverseSnapshot,
     Novel, Chapter, Scene, TrashEntry
 };
-use crate::app::{Route, PmState};
+use crate::app::{Route, PmState, PmId};
 use crate::editors::{CreatureEditor, LocationEditor, EventEditor, EraEditor};
 
 // ================================
@@ -121,6 +121,50 @@ pub enum CoreLoadKey {
     Snapshots { universe_id: String },
 }
 
+// --- PM (Project Manager) hot-path intern pool ---
+// Mantiene DB en String/TEXT, pero en runtime reusa Arc<str> para evitar heap churn.
+#[derive(Debug)]
+pub struct PmIdPool {
+    map: std::collections::HashMap<String, crate::app::PmId>,
+}
+
+impl Default for PmIdPool {
+    fn default() -> Self {
+        Self { map: std::collections::HashMap::new() }
+    }
+}
+
+impl PmIdPool {
+    pub fn rebuild_from_pm(&mut self, pm: &crate::model::KanbanBoardData) {
+        self.map.clear();
+
+        // Column IDs
+        for c in &pm.columns {
+            let arc: crate::app::PmId = std::sync::Arc::from(c.id.as_str());
+            self.map.insert(c.id.clone(), arc);
+        }
+
+        // Card IDs + column_id (por si acaso)
+        for card in pm.cards_by_id.values() {
+            if !self.map.contains_key(card.id.as_str()) {
+                let arc: crate::app::PmId = std::sync::Arc::from(card.id.as_str());
+                self.map.insert(card.id.clone(), arc);
+            }
+            if !self.map.contains_key(card.column_id.as_str()) {
+                let arc: crate::app::PmId = std::sync::Arc::from(card.column_id.as_str());
+                self.map.insert(card.column_id.clone(), arc);
+            }
+        }
+    }
+
+    #[inline]
+    pub fn get(&self, id: &str) -> crate::app::PmId {
+        // En condiciones normales todo está internado tras BoardLoaded.
+        // Fallback defensivo: evita panic, pero puede allocar si se usa.
+        self.map.get(id).cloned().unwrap_or_else(|| std::sync::Arc::from(id))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Toast {
     pub id: u64,
@@ -186,7 +230,11 @@ pub struct AppState {
     pub data_dirty: bool,
 
     pub creatures: Vec<Creature>,
+    // ✅ REFACTOR A.3: Cache para búsquedas O(1) por ID
+    pub creatures_index: HashMap<String, usize>, // creature_id -> index in Vec
     pub locations: Vec<Location>,
+    // ✅ OPTIMIZED: Cache de estructura jerárquica para evitar O(n) en cada render
+    pub locations_children_map: HashMap<Option<String>, Vec<String>>, // parent_id -> Vec<child_id>
     pub timeline_events: Vec<TimelineEvent>,
     pub timeline_eras: Vec<TimelineEra>,
 
@@ -266,9 +314,12 @@ pub struct AppState {
     pub new_board_name: String,
     pub pm_state: PmState,
     pub pm_data: Option<KanbanBoardData>,
-    pub hovered_column: Option<String>,
-    pub hovered_card: Option<String>,
-    pub last_pm_click: Option<(String, Instant)>,
+
+    pub hovered_column: Option<PmId>,
+    pub hovered_card: Option<PmId>,
+    pub last_pm_click: Option<(PmId, Instant)>,
+
+    pub pm_ids: PmIdPool,
 
     pub creature_editor: Option<CreatureEditor>,
     pub last_bestiary_click: Option<(usize, Instant)>,
@@ -340,7 +391,9 @@ impl Default for AppState {
             forge_outline_version: 0,
 
             creatures: vec![],
+            creatures_index: HashMap::new(),
             locations: vec![],
+            locations_children_map: HashMap::new(),
             timeline_events: vec![],
             timeline_eras: vec![],
 
@@ -403,6 +456,9 @@ impl Default for AppState {
             new_board_name: String::new(),
             pm_state: PmState::Idle,
             pm_data: None,
+
+            pm_ids: PmIdPool::default(),
+
             hovered_column: None,
             hovered_card: None,
             last_pm_click: None,
@@ -459,6 +515,12 @@ impl AppState {
         self.toasts.retain(|t| {
             now.saturating_duration_since(t.created_at).as_secs() < t.ttl_secs as u64
         });
+
+        // ✅ Observabilidad: si es error, lo registramos como Error (solo si overlay abierto)
+        if matches!(kind, ToastKind::Error) {
+            // No hot-path: toasts no se emiten por frame. Y debug_push no hace nada si overlay está cerrado.
+            self.debug_push(crate::state::DebugEventKind::Error, message.as_str());
+        }
 
         // 2) Crear el nuevo toast
         self.toast_counter += 1;
@@ -592,4 +654,47 @@ impl AppState {
         self.core_loading_in_progress.insert(key);
         true
     }
+
+    // ============================================
+    // REFACTOR A.2: Location hierarchy cache
+    // ============================================
+
+    /// Rebuild locations children map - O(n) but only when locations change
+    pub fn rebuild_locations_cache(&mut self) {
+        self.locations_children_map.clear();
+
+        for loc in &self.locations {
+            self.locations_children_map
+                .entry(loc.parent_id.clone())
+                .or_insert_with(Vec::new)
+                .push(loc.id.clone());
+        }
+    }
+
+    /// Get children IDs for a parent - O(1)
+    pub fn get_location_children(&self, parent_id: &Option<String>) -> Vec<&String> {
+        self.locations_children_map
+            .get(parent_id)
+            .map(|ids| ids.iter().collect())
+            .unwrap_or_default()
+    }
+}
+
+impl AppState {
+    /// Reconstruye el índice de criaturas - O(n), pero solo cuando cambian las criaturas
+    pub fn rebuild_creatures_index(&mut self) {
+        self.creatures_index.clear();
+
+        for (idx, creature) in self.creatures.iter().enumerate() {
+            self.creatures_index.insert(creature.id.clone(), idx);
+        }
+    }
+
+    /// Busca criatura por ID - O(1) en vez de O(n)
+    pub fn find_creature_by_id(&self, id: &str) -> Option<&Creature> {
+        self.creatures_index
+            .get(id)
+            .and_then(|&idx| self.creatures.get(idx))
+    }
+
 }

@@ -14,6 +14,9 @@ mod state;
 mod editors;
 mod guards;
 
+// ✅ Draft Recovery (Forge) - módulo a nivel de crate root
+mod forge_draft;
+
 pub fn main() -> iced::Result {
     controllers::ui_controller::run()
 }

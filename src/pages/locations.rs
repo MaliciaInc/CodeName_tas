@@ -1,8 +1,6 @@
 use iced::{Alignment, Color, Length, Vector};
 use iced::widget::{button, container, mouse_area, text, text_input, text_editor, Column, Row, Space};
 use iced::Theme;
-use std::collections::HashMap;
-
 use crate::app::{AppState, Message, LocationsMessage};
 use crate::model::Location;
 use crate::{pages::E, ui};
@@ -21,8 +19,8 @@ pub fn locations<'a>(state: &'a AppState, t: ui::Tokens, universe_id: &'a str) -
         .push(ui::outline_button(t, "Back".to_string(), Message::BackToUniverse(universe_id.to_string())))
         .push(ui::primary_button(t, "Add New Location".to_string(), Message::Locations(LocationsMessage::EditorOpenCreate(None))));
 
-    let children_map = build_children_map(&state.locations);
-    let tree_items = build_visual_tree(&state.locations, &state.expanded_locations);
+    // ✅ REFACTOR A.2: Use cached children_map instead of rebuilding O(n) every render
+    let tree_items = build_visual_tree_optimized(state, &state.expanded_locations);
 
     let mut list = Column::new().spacing(4);
 
@@ -30,7 +28,8 @@ pub fn locations<'a>(state: &'a AppState, t: ui::Tokens, universe_id: &'a str) -
         list = list.push(ui::card(t, text("No locations found.").size(14).color(t.muted_fg).into()));
     } else {
         for (loc, depth) in tree_items {
-            let has_children = children_map.contains_key(&Some(loc.id.clone()));
+            // ✅ REFACTOR A.2: Use cached map for O(1) check
+            let has_children = !state.get_location_children(&Some(loc.id.clone())).is_empty();
             let is_expanded = state.expanded_locations.contains(&loc.id);
             let is_selected = state.selected_location.as_ref() == Some(&loc.id);
 
@@ -42,40 +41,44 @@ pub fn locations<'a>(state: &'a AppState, t: ui::Tokens, universe_id: &'a str) -
     ui::page_padding(content.into())
 }
 
-fn build_children_map(locations: &[Location]) -> HashMap<Option<String>, Vec<&Location>> {
-    let mut map: HashMap<Option<String>, Vec<&Location>> = HashMap::new();
-    for loc in locations {
-        map.entry(loc.parent_id.clone()).or_default().push(loc);
-    }
-    map
-}
 
-fn build_visual_tree<'a>(
-    locations: &'a [Location],
+// ✅ REFACTOR A.2: Use cached map from AppState
+fn build_visual_tree_optimized<'a>(
+    state: &'a crate::app::AppState,
     expanded: &std::collections::HashSet<String>
 ) -> Vec<(&'a Location, usize)> {
-    let map = build_children_map(locations);
     let mut result = Vec::new();
-    process_node(&map, &None, 0, &mut result, expanded);
+    process_node_optimized(state, &None, 0, &mut result, expanded);
     result
 }
 
-fn process_node<'a>(
-    map: &HashMap<Option<String>, Vec<&'a Location>>,
+// ✅ REFACTOR A.2: Use O(1) lookups via state.locations_children_map
+fn process_node_optimized<'a>(
+    state: &'a crate::app::AppState,
     parent_id: &Option<String>,
     depth: usize,
     result: &mut Vec<(&'a Location, usize)>,
     expanded: &std::collections::HashSet<String>
 ) {
-    if let Some(children) = map.get(parent_id) {
-        let mut sorted_children = children.clone();
-        sorted_children.sort_by_key(|l| &l.name);
+    // O(1) lookup using cached map
+    let child_ids = state.get_location_children(parent_id);
 
-        for child in sorted_children {
-            result.push((child, depth));
-            if expanded.contains(&child.id) {
-                process_node(map, &Some(child.id.clone()), depth + 1, result, expanded);
-            }
+    if child_ids.is_empty() {
+        return;
+    }
+
+    // Get actual Location objects and sort by name
+    let mut children: Vec<&Location> = child_ids
+        .iter()
+        .filter_map(|id| state.locations.iter().find(|l| &l.id == *id))
+        .collect();
+
+    children.sort_by_key(|l| &l.name);
+
+    for child in children {
+        result.push((child, depth));
+        if expanded.contains(&child.id) {
+            process_node_optimized(state, &Some(child.id.clone()), depth + 1, result, expanded);
         }
     }
 }
@@ -182,7 +185,7 @@ fn location_node<'a>(
         .push(card_container);
 
     mouse_area(row)
-        .on_press(Message::Locations(LocationsMessage::Select(id)))
+        .on_press(Message::Locations(LocationsMessage::CardClicked(id)))
         .into()
 }
 

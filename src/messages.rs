@@ -1,56 +1,119 @@
 use iced::widget::text_editor;
-use crate::app::Route;
+use crate::app::{Route, PmId};
 use crate::model::{Creature, Universe, Card, KanbanBoardData, Board, Location, TimelineEvent, TimelineEra, Project, UniverseSnapshot, Novel, Chapter, Scene, TrashEntry};
 use crate::state::DemoResetScope;
 
 #[derive(Debug, Clone)]
 pub enum PmMessage {
-    BoardNameChanged(String), CreateBoard, DeleteBoard(String), OpenBoard(String),
-    BoardLoaded(KanbanBoardData), DragStart(String), ColumnHovered(String), CardHovered(String),
-    OpenCreate(String), OpenGlobalCreate, OpenEdit(Card), TitleChanged(String),
-    DescChanged(text_editor::Action), PriorityChanged(String), Save, Delete, Cancel,
+    BoardNameChanged(String),
+    CreateBoard,
+    DeleteBoard(String),
+    OpenBoard(String),
+
+    // ✅ usados por pm_controller.rs
+    BoardLoaded(KanbanBoardData),
+    OpenCreate(PmId),
+    OpenEdit(Card),
+
+    // 🔥 Hot-path
+    DragStart(PmId),
+    ColumnHovered(PmId),
+    CardHovered(PmId),
+
+    OpenGlobalCreate,
+    TitleChanged(String),
+    DescChanged(text_editor::Action),
+    PriorityChanged(String),
+    Save,
+    Delete,
+    Cancel,
 }
+
 #[derive(Debug, Clone)]
 pub enum BestiaryMessage {
     Open(String), CardClicked(usize), EditorOpenCreate, EditorCancel, EditorSave,
     NameChanged(String), KindChanged(String), HabitatChanged(String),
-    DescriptionChanged(text_editor::Action), DangerChanged(String), LocationChanged(Option<Location>),
+    DescriptionChanged(text_editor::Action), DangerChanged(String), LocationChanged(Option<String>), // ✅ C.1: ID instead of full struct
     Delete(String), Archive(String), Restore(String),
 }
 
 #[derive(Debug, Clone)]
 pub enum UniverseMessage {
-    NameChanged(String), DescChanged(String), Create, Delete(String), Open(String),
+    NameChanged(String),
+    DescChanged(String),
+    Create,
+    Delete(String),
+    Open(String),
+
     InjectDemoData(String),
     ResetDemoPrompt(String, DemoResetScope),
     ToggleDeveloperPanel,
     ToggleDebugOverlay,
+
     SnapshotNameChanged(String),
     SnapshotCreate(String),
-    SnapshotRefresh(String),
+    SnapshotRefresh(String), // ✅ usado por universe_controller.rs
     SnapshotRestore(String),
     SnapshotDelete(String),
+
     ValidateUniverse(String),
 }
 
 #[derive(Debug, Clone)]
 pub enum LocationsMessage {
-    Open(String), EditorOpenCreate(Option<String>), CardClicked(String), EditorCancel, EditorSave,
-    Delete(String), NameChanged(String), KindChanged(String), DescriptionChanged(text_editor::Action),
-    ToggleExpand(String), Select(String), CardDoubleClicked(String),
+    Open(String),
+    EditorOpenCreate(Option<String>),
+
+    CardClicked(String), // ✅ usado por locations_controller.rs
+    CardDoubleClicked(String),
+
+    EditorCancel,
+    EditorSave,
+    Delete(String),
+
+    NameChanged(String),
+    KindChanged(String),
+    DescriptionChanged(text_editor::Action),
+
+    ToggleExpand(String),
+    Select(String),
 }
 
 #[derive(Debug, Clone)]
 pub enum TimelineMessage {
-    Open(String),
-    EditorOpenCreateEvent(Option<i64>), EditorOpenCreateEra,
-    EditEvent(String), EditEra(String),
-    CardClicked(String), EraBannerClicked(String),
-    EditorCancel, EditorSaveEvent, EditorSaveEra,
-    DeleteEvent(String), DeleteEra(String),
-    TitleChanged(String), YearChanged(String), DisplayDateChanged(String), ImportanceChanged(String),
-    KindChanged(String), ColorChanged(String), LocationChanged(Option<Location>), DescriptionChanged(text_editor::Action),
-    EraNameChanged(String), EraStartChanged(String), EraEndChanged(String), EraColorChanged(String), EraDescChanged(text_editor::Action),
+    Open(String), // ✅ usado por timeline_controller.rs
+
+    EditorOpenCreateEvent(Option<i64>),
+    EditorOpenCreateEra,
+
+    EditEvent(String),
+    EditEra(String),
+
+    CardClicked(String),
+    EraBannerClicked(String),
+
+    EditorCancel,
+    EditorSaveEvent,
+    EditorSaveEra,
+
+    DeleteEvent(String),
+    DeleteEra(String),
+
+    TitleChanged(String),
+    YearChanged(String),
+    DisplayDateChanged(String),
+    ImportanceChanged(String),
+
+    KindChanged(String),
+    ColorChanged(String),
+    LocationChanged(Option<String>),
+    DescriptionChanged(text_editor::Action),
+
+    EraNameChanged(String),
+    EraStartChanged(String),
+    EraEndChanged(String),
+    EraColorChanged(String),
+    EraDescChanged(text_editor::Action),
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +151,16 @@ pub enum TheForgeMessage {
     // --- AUTO-SAVE ---
     SaveCurrentScene,
     DebounceComplete(u64),
+
+    // --- DRAFT RECOVERY (LOCAL) ---
+    DraftLoaded {
+        scene_id: String,
+        result: Result<Option<String>, String>,
+    },
+    DraftSaved {
+        scene_id: String,
+        result: Result<(), String>,
+    },
 
     // --- INLINE RENAME ---
     EndRename,

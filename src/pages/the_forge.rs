@@ -11,8 +11,7 @@
 // ============================================
 
 use iced::{Alignment, Background, Border, Color, Element, Length, Theme};
-use iced::widget::{
-    self, button, column, container, row, scrollable, text, text_editor, text_input, Column, Id, Row,
+use iced::widget::{button, column, container, row, scrollable, text, text_editor, text_input, Column, Id, Row,
     Space,
 };
 
@@ -295,26 +294,50 @@ fn chapter_row<'a>(
             Message::TheForge(TheForgeMessage::EndRename),
         )
     } else {
-        // 🧨 CANARIO VISUAL + LAYOUT NUDGE (industrial):
-        // Alterna un caracter invisible para forzar “text shaping” distinto.
-        let nudge = if (outline_nonce & 1) == 0 {
-            '\u{200B}'
+        // ✅ WORKAROUND INDUSTRIAL:
+        // Bug real observado: el renderer se “pega” cuando el título pasa ~8 chars.
+        // Solución: partir el render en varios `text()` de 8 caracteres (DINÁMICO, sin límite),
+        // para evitar un solo run largo que dispara el bug de glyph cache/atlas.
+        //
+        // Performance: O(n) en chars, pero títulos cortos → práctico O(1).
+        // Memoria: CERO allocations, solo slices &str.
+        const CHUNK: usize = 8;
+
+        let color = if is_active {
+            t.foreground
         } else {
-            '\u{200C}'
+            ui::alpha(t.muted_fg, 0.85)
         };
 
-        // Canario: útil para verificar si el frame se dibuja realmente.
-        let label = format!("{title}{nudge}  ·{}", outline_nonce);
+        let mut r = Row::new()
+            .spacing(0)
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
 
-        text(label)
-            .size(13)
-            .color(if is_active {
-                t.foreground
-            } else {
-                ui::alpha(t.muted_fg, 0.85)
-            })
-            .width(Length::Fill)
-            .into()
+        // Nudge invisible como widget aparte (cero heap) para forzar re-shaping entre frames
+        // sin ensuciar el título real.
+        let prefix = if (outline_nonce & 1) == 0 { "\u{200B}" } else { "\u{200C}" };
+        r = r.push(text(prefix).size(1).color(Color::TRANSPARENT)); // invisible (zero-width)
+
+        // Partición segura por límites UTF-8 (char boundary)
+        let mut start_byte = 0usize;
+        let mut count_chars = 0usize;
+
+        for (i, _ch) in title.char_indices() {
+            if count_chars == CHUNK {
+                let part = &title[start_byte..i];
+                r = r.push(text(part).size(13).color(color));
+                start_byte = i;
+                count_chars = 0;
+            }
+            count_chars += 1;
+        }
+
+        // Último segmento
+        let tail = &title[start_byte..];
+        r = r.push(text(tail).size(13).color(color).width(Length::Fill));
+
+        r.into()
     };
 
     let status_text: Element<Message> = container(

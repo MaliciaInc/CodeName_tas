@@ -1,20 +1,20 @@
 -- ============================================================
--- 0010_Core_Schema.sql
--- Titan Architect Studio (TAS) - Canonical Baseline Schema v10
+-- 0010_CoreSchema.sql
+-- Titan Architect Studio (TAS) - Esquema Base Canónico v10
 --
--- Single source of truth for a fresh database.
--- Includes core schema + relationships + audit_log in one pass.
+-- Única fuente de verdad para una base de datos nueva.
+-- Incluye: core schema + relaciones + audit_log en una sola pasada.
 --
--- Intended workflow:
---   - delete DB
---   - app starts -> migrations run -> demo injection -> ready
+-- Flujo esperado:
+--   - borrar la DB
+--   - app arranca -> corre migrations -> inyecta demo -> listo
 -- ============================================================
 
 PRAGMA foreign_keys = ON;
 
 -- ============================================================
--- CORE: UNIVERSES / LOCATIONS / BESTIARY / TIMELINE / PM
--- (matches migrations 0001_init_core.sql)
+-- CORE: UNIVERSOS / LOCATIONS / BESTIARY / TIMELINE / PM
+-- (equivalente al estado final de migrations 0001_init_core.sql)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS universes (
@@ -115,8 +115,8 @@ CREATE INDEX IF NOT EXISTS idx_cards_column
     ON cards(column_id);
 
 -- ============================================================
--- THE FORGE (CANONICAL): NOVELS / CHAPTERS / SCENES
--- (matches migrations 0003_forge_stories_scenes.sql canonical)
+-- THE FORGE (CANÓNICO): NOVELS / CHAPTERS / SCENES
+-- (equivalente al estado final de 0003_forge_stories_scenes.sql)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS novels (
@@ -172,7 +172,7 @@ CREATE INDEX IF NOT EXISTS idx_scenes_chapter_pos
 
 -- ============================================================
 -- SNAPSHOTS: universe_snapshots + name
--- (0004 + 0010 combined into one canonical table)
+-- (estado canónico: 0004 + 0010 combinadas en una sola tabla)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS universe_snapshots (
@@ -195,8 +195,8 @@ CREATE INDEX IF NOT EXISTS idx_universe_snapshots_name
     ON universe_snapshots(name);
 
 -- ============================================================
--- TRASH SYSTEM
--- (matches migrations 0008_trash.sql final state)
+-- SISTEMA DE PAPELERA (TRASH)
+-- (equivalente al estado final de 0008_trash.sql)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS trash_entry (
@@ -218,7 +218,7 @@ CREATE INDEX IF NOT EXISTS idx_trash_target
     ON trash_entry(target_type, target_id);
 
 -- ============================================================
--- DB META (canonical form from 0009_db_meta_canonicalize.sql)
+-- DB META (forma canónica de 0009_db_meta_canonicalize.sql)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS db_meta (
@@ -236,7 +236,7 @@ CREATE TABLE IF NOT EXISTS db_meta (
     app_version TEXT NOT NULL DEFAULT ''
     );
 
--- Ensure at least one row exists
+-- Asegurar que exista al menos una fila
 INSERT INTO db_meta (schema_version, container_kind, enabled_capabilities_json, created_at, app_version)
 SELECT
     10,
@@ -254,8 +254,8 @@ SELECT
     WHERE NOT EXISTS (SELECT 1 FROM db_meta);
 
 -- ============================================================
--- NEW: RELATIONSHIP TYPES + RELATIONSHIPS
--- (formerly planned as 0011_relationships.sql)
+-- NUEVO: TIPOS DE RELACIÓN + RELACIONES
+-- (antes planeado como 0011_relationships.sql)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS relationship_types (
@@ -287,8 +287,8 @@ CREATE INDEX IF NOT EXISTS idx_relationships_type
     ON relationships(relationship_type_id);
 
 -- ============================================================
--- NEW: AUDIT LOG
--- (formerly planned as 0012_audit_log.sql)
+-- NUEVO: AUDIT LOG
+-- (antes planeado como 0012_audit_log.sql)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -307,7 +307,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_entity
     ON audit_log(entity_type, entity_id);
 
 -- ============================================================
--- FINAL: VERSION STAMP (as requested)
+-- FINAL: STAMP DE VERSIÓN (como pediste)
 -- ============================================================
 
 UPDATE db_meta SET schema_version = 10;

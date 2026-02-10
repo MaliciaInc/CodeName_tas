@@ -1,5 +1,5 @@
 use iced::{Color, Element, Length};
-use iced::widget::{column, container, row, scrollable, text, Column, Row};
+use iced::widget::{container, scrollable, text, Column, Row};
 
 use crate::{ui, messages::Message, model::TrashEntry};
 use crate::state::AppState;

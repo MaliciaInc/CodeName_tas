@@ -69,7 +69,37 @@ pub fn render_creature_modal<'a>(t: ui::Tokens, editor: &'a crate::app::Creature
     let kind_input = text_input("Kind / tags", &editor.kind).on_input(|v| Message::Bestiary(BestiaryMessage::KindChanged(v))).padding(10).style(ui::input_style(t));
     let habitat_input = text_input("Habitat Description", &editor.habitat).on_input(|v| Message::Bestiary(BestiaryMessage::HabitatChanged(v))).padding(10).style(ui::input_style(t));
 
-    let location_picker = Column::new().spacing(6).push(text("Home Location (Optional)").size(12).color(t.muted_fg)).push(pick_list(locations, editor.home_location.clone(), |loc| Message::Bestiary(BestiaryMessage::LocationChanged(Some(loc)))).placeholder("Select location...").width(Length::Fill).padding(10).style(move |_, status| { let base = iced::widget::pick_list::Style { text_color: t.foreground, placeholder_color: t.muted_fg, handle_color: t.muted_fg, background: iced::Background::Color(t.input_border), border: iced::Border { color: t.border, width: 1.0, radius: 6.0.into() } }; match status { iced::widget::pick_list::Status::Opened { .. } => iced::widget::pick_list::Style { border: iced::Border { color: t.accent, ..base.border }, ..base }, _ => base } }));
+    // ✅ C.1: Convert home_location_id to Location reference for display
+    let selected_location = editor.home_location_id.as_ref()
+        .and_then(|id| locations.iter().find(|l| l.id == *id));
+
+    let location_picker = Column::new()
+        .spacing(6)
+        .push(text("Home Location (Optional)").size(12).color(t.muted_fg))
+        .push(pick_list(
+            locations,
+            selected_location,
+            |loc| Message::Bestiary(BestiaryMessage::LocationChanged(Some(loc.id.clone()))) // ✅ C.1: Send ID only
+        )
+            .placeholder("Select location...")
+            .width(Length::Fill)
+            .padding(10)
+            .style(move |_, status| {
+                let base = iced::widget::pick_list::Style {
+                    text_color: t.foreground,
+                    placeholder_color: t.muted_fg,
+                    handle_color: t.muted_fg,
+                    background: iced::Background::Color(t.input_border),
+                    border: iced::Border { color: t.border, width: 1.0, radius: 6.0.into() }
+                };
+                match status {
+                    iced::widget::pick_list::Status::Opened { .. } => iced::widget::pick_list::Style {
+                        border: iced::Border { color: t.accent, ..base.border },
+                        ..base
+                    },
+                    _ => base
+                }
+            }));
 
     let desc_input = text_editor(&editor.description).on_action(|v| Message::Bestiary(BestiaryMessage::DescriptionChanged(v))).padding(10).height(Length::Fixed(150.0)).style(ui::text_editor_style(t));
 

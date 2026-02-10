@@ -307,10 +307,14 @@ pub fn render_event_modal<'a>(t: ui::Tokens, editor: &'a crate::app::EventEditor
         .on_input(|v| Message::Timeline(TimelineMessage::ColorChanged(v)))
         .padding(10).style(ui::input_style(t)).width(Length::Fixed(100.0));
 
+    // ✅ C.1: Convert location_id to Location reference for display
+    let selected_location = editor.location_id.as_ref()
+        .and_then(|id| locations.iter().find(|l| l.id == *id));
+
     let loc_picker = pick_list(
         locations,
-        editor.location.clone(),
-        |loc| Message::Timeline(TimelineMessage::LocationChanged(Some(loc)))
+        selected_location,
+        |loc| Message::Timeline(TimelineMessage::LocationChanged(Some(loc.id.clone()))) // ✅ C.1: Send ID only
     ).placeholder("Location...").width(Length::Fill).padding(10);
 
     let imp_picker = pick_list(

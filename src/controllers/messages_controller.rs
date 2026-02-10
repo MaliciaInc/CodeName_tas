@@ -164,6 +164,10 @@ pub fn update(state: &mut AppState, message: Message) -> Vec<Task<Message>> {
                 Ok(v) => {
                     if still_relevant {
                         state.creatures = v;
+
+                        // ✅ REFACTOR A.3: Rebuild index after loading
+                        state.rebuild_creatures_index();
+
                         state.loaded_creatures_universe = Some(universe_id.clone());
                         state
                             .core_creatures_loaded_for
@@ -214,6 +218,9 @@ pub fn update(state: &mut AppState, message: Message) -> Vec<Task<Message>> {
                         let mut v = v;
                         v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                         state.locations = v;
+
+                        // ✅ REFACTOR A.2: Rebuild hierarchy cache after loading
+                        state.rebuild_locations_cache();
 
                         state.loaded_locations_universe = Some(universe_id.clone());
                         state

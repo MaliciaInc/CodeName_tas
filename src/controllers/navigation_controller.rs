@@ -1,6 +1,4 @@
-use iced::Task;
 use crate::app::{AppState, Message, Route};
-use crate::db::Database;
 use crate::model::{Chapter, Novel, Scene};
 use crate::state::ToastKind;
 
@@ -117,14 +115,6 @@ pub fn try_handle(state: &mut AppState, message: &Message) -> NavigationResult {
         _ => NavigationResult::NotHandled,
     }
 }
-
-// --- THE FORGE DATA LOADING ---
-
-pub fn load_forge_data_if_needed(state: &mut AppState, db: &Database) -> Vec<Task<Message>> {
-    // ✅ DELEGADO al nuevo forge_data_controller (devuelve Vec<Task>)
-    crate::controllers::forge_data_controller::load_novels_if_needed(state, db)
-}
-
 // --- FETCH HANDLERS ---
 
 pub fn handle_forge_chapters_fetched(

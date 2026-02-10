@@ -96,6 +96,32 @@ pub async fn ensure_minimum_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
     ensure_column(pool, "bestiary_entries", "home_location_id", "TEXT").await?;
     ensure_column(pool, "bestiary_entries", "archived", "INTEGER NOT NULL DEFAULT 0").await?;
 
+    // --- CORE TABLES (timestamps) ---
+    // Esto evita crashes tipo: "no column named updated_at" en PM/Timeline/Bestiary/Locations.
+    ensure_column(pool, "universes", "created_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+    ensure_column(pool, "universes", "updated_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+
+    ensure_column(pool, "locations", "created_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+    ensure_column(pool, "locations", "updated_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+
+    ensure_column(pool, "bestiary_entries", "created_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+    ensure_column(pool, "bestiary_entries", "updated_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+
+    ensure_column(pool, "timeline_eras", "created_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+    ensure_column(pool, "timeline_eras", "updated_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+
+    ensure_column(pool, "timeline_events", "created_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+    ensure_column(pool, "timeline_events", "updated_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+
+    ensure_column(pool, "boards", "created_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+    ensure_column(pool, "boards", "updated_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+
+    ensure_column(pool, "board_columns", "created_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+    ensure_column(pool, "board_columns", "updated_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+
+    ensure_column(pool, "cards", "created_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+    ensure_column(pool, "cards", "updated_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+
     // --- Novels, Chapters, Scenes (timestamps) ---
     ensure_column(pool, "novels", "created_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
     ensure_column(pool, "novels", "updated_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
@@ -105,6 +131,7 @@ pub async fn ensure_minimum_schema(pool: &SqlitePool) -> Result<(), sqlx::Error>
 
     ensure_column(pool, "scenes", "created_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
     ensure_column(pool, "scenes", "updated_at", "INTEGER NOT NULL DEFAULT (unixepoch())").await?;
+
 
     // --- Normalización de valores (para que no queden null/empty raros) ---
     // Boards.kind

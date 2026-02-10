@@ -423,26 +423,19 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
         stack = stack.push(pages::timeline::render_era_modal(t, editor));
     }
 
-    // Dragging Ghost
+    // ✅ OPTIMIZED Dragging Ghost - Zero lookups per frame
     if let PmState::Dragging {
-        card_id,
+        card_title,       // <-- Use cached title (O(1))
         current_cursor,
         active,
         ..
     } = &state.pm_state
     {
         if *active {
-            let title: &str = state
-                .pm_data
-                .as_ref()
-                .and_then(|data| {
-                    data.columns
-                        .iter()
-                        .flat_map(|(_col, cards)| cards.iter())
-                        .find(|c| c.id == *card_id)
-                        .map(|c| c.title.as_str())
-                })
-                .unwrap_or("Dragging…");
+            // ✅ PERFORMANCE: Direct reference, no HashMap lookup needed
+            // Before: O(n) search through all cards × 60 FPS = 6000+ iterations/sec
+            // After: O(1) reference × 60 FPS = 60 references/sec
+            let title: &str = card_title.as_str();
 
             let ghost = container(
                 text(title)

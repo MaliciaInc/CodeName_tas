@@ -4,10 +4,42 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use crate::app::{AppState, PmMessage, PmState};
-use crate::model::Card;
-use crate::state::{DbAction, ToastKind};
 use crate::state::ConfirmAction;
+use crate::state::{DbAction, ToastKind};
 
+// Helper a nivel de módulo: evita duplicación al abrir el editor de creación.
+// Nota de rendimiento: esto NO corre por frame; solo en acciones de UI (click/atajos).
+// Helpers a nivel de módulo: evita duplicación al abrir editores (Create / Edit).
+// Nota de rendimiento: esto NO corre por frame; solo en acciones de UI (click/atajos).
+
+fn open_create_editor(state: &mut AppState, col_id: &str) {
+    state.pm_state = PmState::Editing {
+        card_id: None,
+        column_id: col_id.to_string(),
+        title: String::new(),
+        description: text_editor::Content::new(),
+        priority: "Medium".to_string(),
+    };
+}
+
+// Edit cuando YA TENÉS Strings (evita to_string extra; mueve ownership)
+fn open_edit_editor_owned(
+    state: &mut AppState,
+    card_id: String,
+    column_id: String,
+    title: String,
+    description: String,
+    priority: String,
+) {
+    let content = text_editor::Content::with_text(&description);
+    state.pm_state = PmState::Editing {
+        card_id: Some(card_id),
+        column_id,
+        title,
+        description: content,
+        priority,
+    };
+}
 pub fn update(state: &mut AppState, message: PmMessage) {
     match message {
         PmMessage::BoardNameChanged(name) => state.new_board_name = name,
@@ -33,19 +65,21 @@ pub fn update(state: &mut AppState, message: PmMessage) {
         PmMessage::BoardLoaded(data) => {
             state.pm_data = Some(data);
 
-            // ✅ Mejora #1: escoger columna default inmediatamente
-            // Preferimos "col-todo" (id), luego name "to do", luego first.
+            // 🔥 Rebuild del pool de IDs internados para evitar heap churn en view/drag/hover
             if let Some(pm) = &state.pm_data {
-                if let Some((col, _)) = pm.columns.iter().find(|(c, _)| c.id == "col-todo") {
-                    state.hovered_column = Some(col.id.clone());
-                } else if let Some((col, _)) = pm
+                state.pm_ids.rebuild_from_pm(pm);
+
+                // Selección inicial: To Do (por id o por nombre), o la primera columna
+                if let Some(col) = pm.columns.iter().find(|c| c.id == "col-todo") {
+                    state.hovered_column = Some(state.pm_ids.get(col.id.as_str()));
+                } else if let Some(col) = pm
                     .columns
                     .iter()
-                    .find(|(c, _)| c.name.trim().eq_ignore_ascii_case("to do"))
+                    .find(|c| c.name.trim().eq_ignore_ascii_case("to do"))
                 {
-                    state.hovered_column = Some(col.id.clone());
-                } else if let Some((first, _)) = pm.columns.first() {
-                    state.hovered_column = Some(first.id.clone());
+                    state.hovered_column = Some(state.pm_ids.get(col.id.as_str()));
+                } else if let Some(first) = pm.columns.first() {
+                    state.hovered_column = Some(state.pm_ids.get(first.id.as_str()));
                 } else {
                     state.hovered_column = None;
                 }
@@ -59,40 +93,65 @@ pub fn update(state: &mut AppState, message: PmMessage) {
         }
 
         PmMessage::DragStart(card_id) => {
+            // card_id ahora es PmId (Arc<str>)
+            const DOUBLE_CLICK_MS: u128 = 350;
             let now = Instant::now();
-            let mut is_double_click = false;
 
-            if let Some((last_id, last_time)) = &state.last_pm_click {
-                if *last_id == card_id && now.duration_since(*last_time).as_millis() < 500 {
-                    is_double_click = true;
+            let is_double = match state.last_pm_click.as_ref() {
+                Some((last_id, last_at))
+                if last_id.as_ref() == card_id.as_ref()
+                    && now.duration_since(*last_at).as_millis() <= DOUBLE_CLICK_MS =>
+                    {
+                        true
+                    }
+                _ => false,
+            };
+
+            if is_double {
+                state.last_pm_click = None;
+
+                // ---------------------------------------------------------
+                // 1) Extraemos lo que necesitamos mientras el borrow vive
+                // ---------------------------------------------------------
+                let payload = state
+                    .pm_data
+                    .as_ref()
+                    .and_then(|data| data.get_card(card_id.as_ref()))
+                    .map(|card| {
+                        (
+                            card.id.clone(),
+                            card.column_id.clone(),
+                            card.title.clone(),
+                            card.description.clone(),
+                            card.priority.clone(),
+                        )
+                    });
+
+                // ---------------------------------------------------------
+                // 2) Aquí el borrow inmutable de pm_data YA TERMINÓ
+                // ---------------------------------------------------------
+
+                if let Some((cid, col, title, desc, prio)) = payload {
+                    open_edit_editor_owned(state, cid, col, title, desc, prio);
                 }
+
+                return;
             }
+
+            // Primer click: registramos para posible double click (Arc clone = barato)
             state.last_pm_click = Some((card_id.clone(), now));
 
-            // Buscar el card real en pm_data (sin clonar Card completo en el mensaje)
-            let found = state.pm_data.as_ref().and_then(|data| {
-                data.columns
-                    .iter()
-                    .flat_map(|(_col, cards)| cards.iter())
-                    .find(|c| c.id == card_id)
-            });
-
-            if let Some(c) = found {
-                if is_double_click {
-                    state.pm_state = PmState::Editing {
-                        card_id: Some(c.id.clone()),
-                        column_id: c.column_id.clone(),
-                        title: c.title.clone(),
-                        description: text_editor::Content::with_text(&c.description),
-                        priority: c.priority.clone(),
-                    };
-                } else {
+            // Iniciar dragging con IDs internados (Arc<str>) para evitar clones de String
+            if let Some(data) = state.pm_data.as_ref() {
+                if let Some(card) = data.get_card(card_id.as_ref()) {
                     state.pm_state = PmState::Dragging {
-                        card_id: c.id.clone(),
-                        original_col: c.column_id.clone(),
-                        drag_start: Point::new(0.0, 0.0),
-                        current_cursor: Point::new(0.0, 0.0),
+                        card_id: state.pm_ids.get(card.id.as_str()),
+                        card_title: card.title.clone(),
+                        original_col: state.pm_ids.get(card.column_id.as_str()),
+                        drag_start: iced::Point::new(0.0, 0.0),
+                        current_cursor: iced::Point::new(0.0, 0.0),
                         active: false,
+                        last_cursor_emit: Instant::now(),
                     };
                 }
             }
@@ -102,68 +161,50 @@ pub fn update(state: &mut AppState, message: PmMessage) {
         PmMessage::CardHovered(cid) => state.hovered_card = Some(cid),
 
         PmMessage::OpenCreate(cid) => {
-            state.pm_state = PmState::Editing {
-                card_id: None,
-                column_id: cid,
-                title: String::new(),
-                description: text_editor::Content::new(),
-                priority: "Medium".to_string(),
-            }
+            open_create_editor(state, cid.as_ref());
         }
 
         PmMessage::OpenGlobalCreate => {
-            // ✅ Mejora #2: preferir hovered_column si existe y es válida
+            // Abrimos editor en una columna “razonable”
             let mut target_col_id = String::new();
 
             if let Some(data) = &state.pm_data {
                 // 0) Prefer hovered_column si es válida
                 if let Some(hc) = &state.hovered_column {
-                    if data.columns.iter().any(|(c, _)| &c.id == hc) {
-                        target_col_id = hc.clone();
+                    if data.columns.iter().any(|c| c.id.as_str() == hc.as_ref()) {
+                        target_col_id = hc.as_ref().to_string();
                     }
                 }
 
                 if target_col_id.is_empty() {
                     // 1) Try To Do by id
-                    if let Some((col, _)) = data.columns.iter().find(|(c, _)| c.id == "col-todo") {
+                    if let Some(col) = data.columns.iter().find(|c| c.id == "col-todo") {
                         target_col_id = col.id.clone();
                     }
                     // 2) Try To Do by name
-                    else if let Some((col, _)) = data
+                    else if let Some(col) = data
                         .columns
                         .iter()
-                        .find(|(c, _)| c.name.trim().eq_ignore_ascii_case("to do"))
+                        .find(|c| c.name.trim().eq_ignore_ascii_case("to do"))
                     {
                         target_col_id = col.id.clone();
                     }
                     // 3) Fallback to first
-                    else if let Some((first, _)) = data.columns.first() {
+                    else if let Some(first) = data.columns.first() {
                         target_col_id = first.id.clone();
                     }
                 }
             }
 
             if !target_col_id.is_empty() {
-                state.pm_state = PmState::Editing {
-                    card_id: None,
-                    column_id: target_col_id,
-                    title: String::new(),
-                    description: text_editor::Content::new(),
-                    priority: "Medium".to_string(),
-                };
+                open_create_editor(state, target_col_id.as_str());
             } else {
                 state.show_toast("No columns available to create task", ToastKind::Error);
             }
         }
 
         PmMessage::OpenEdit(c) => {
-            state.pm_state = PmState::Editing {
-                card_id: Some(c.id),
-                column_id: c.column_id,
-                title: c.title,
-                description: text_editor::Content::with_text(&c.description),
-                priority: c.priority,
-            }
+            open_edit_editor_owned(state, c.id, c.column_id, c.title, c.description, c.priority);
         }
 
         PmMessage::TitleChanged(v) => {
@@ -196,18 +237,20 @@ pub fn update(state: &mut AppState, message: PmMessage) {
             } = &state.pm_state
             {
                 if !title.trim().is_empty() && !column_id.is_empty() {
-                    // Calcular la siguiente posición en la columna
-                    let next_pos = state.pm_data
+                    // ✅ OPTIMIZED: Use get_column_cards O(1) method
+                    let next_pos = state
+                        .pm_data
                         .as_ref()
-                        .and_then(|data| {
-                            data.columns.iter()
-                                .find(|(col, _)| &col.id == column_id)
-                                .map(|(_, cards)| cards.len() as i64)
+                        .map(|data| {
+                            let cards = data.get_column_cards(column_id);
+                            cards.len() as i64
                         })
                         .unwrap_or(0);
 
-                    let _card = Card {
-                        id: card_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    let _card = crate::model::Card {
+                        id: card_id
+                            .clone()
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                         column_id: column_id.clone(),
                         title: title.clone(),
                         description: description.text(),
@@ -218,12 +261,15 @@ pub fn update(state: &mut AppState, message: PmMessage) {
                     state.queue(DbAction::SaveCard(_card));
                 }
                 state.pm_state = crate::app::PmState::Idle;
+            }
         }
-         }
 
         // ✅ En tu repo, el delete desde editor es PmMessage::Delete
         PmMessage::Delete => {
-            if let PmState::Editing { card_id: Some(id), .. } = &state.pm_state {
+            if let PmState::Editing {
+                card_id: Some(id), ..
+            } = &state.pm_state
+            {
                 state.queue(DbAction::DeleteCard(id.clone()));
             }
             state.pm_state = PmState::Idle;
@@ -242,7 +288,17 @@ pub fn handle_mouse_moved(state: &mut AppState, p: Point) {
         ..
     } = &mut state.pm_state
     {
+        // Primera muestra real: fija el origen al cursor para evitar activar el drag “de una”
+        // por el valor inicial (0,0).
+        if !*active && drag_start.x == 0.0 && drag_start.y == 0.0 {
+            *drag_start = p;
+            *current_cursor = p;
+            return;
+        }
+
         *current_cursor = p;
+
+        // No activar drag hasta pasar un umbral (10px)
         if !*active {
             let dx = p.x - drag_start.x;
             let dy = p.y - drag_start.y;
@@ -256,60 +312,69 @@ pub fn handle_mouse_moved(state: &mut AppState, p: Point) {
 pub fn handle_mouse_released(state: &mut AppState) {
     let mut actions_to_queue: Vec<DbAction> = Vec::new();
 
+    // Nota: evitamos returns tempranos para GARANTIZAR reset del drag state.
+    let mut should_move = false;
+
     {
-        if let PmState::Dragging { card_id, original_col, active, .. } = &state.pm_state {
+        if let PmState::Dragging {
+            card_id,
+            original_col,
+            active,
+            ..
+        } = &state.pm_state
+        {
             if *active {
                 if let Some(target_col) = &state.hovered_column {
-                    // Si terminó en la misma columna, no hacemos nada.
-                    if target_col == original_col {
-                        return;
-                    }
-                    if let Some(data) = &state.pm_data {
-                        if let Some((_, cards)) =
-                            data.columns.iter().find(|(col, _)| col.id == *target_col)
-                        {
-                            let mut new_pos: i64 = 0;
+                    // Si terminó en la misma columna, no hacemos nada (pero igual reseteamos el estado).
+                    if target_col.as_ref() != original_col.as_ref() {
+                        should_move = true;
+
+                        if let Some(data) = &state.pm_data {
+                            // ✅ HOT-PATH: lookup O(1) por columna
+                            let cards = data.get_column_cards(target_col.as_ref());
+
+                            let mut new_pos: i64 = 1000;
                             let mut found_neighbor = false;
                             let mut needs_rebalance = false;
 
                             if let Some(hover_id) = &state.hovered_card {
-                                if let Some(idx) = cards.iter().position(|c| c.id == *hover_id) {
+                                if let Some(idx) = cards
+                                    .iter()
+                                    .position(|c| c.id.as_str() == hover_id.as_ref())
+                                {
+                                    found_neighbor = true;
+
+                                    // Insertamos “antes” del hovered card.
                                     let neighbor_pos = cards[idx].position;
 
-                                    if idx > 0 {
-                                        let prev_pos = cards[idx - 1].position;
-                                        new_pos = (prev_pos + neighbor_pos) / 2;
+                                    let prev_pos = if idx > 0 { cards[idx - 1].position } else { 0 };
+                                    let gap = neighbor_pos - prev_pos;
 
-                                        if (neighbor_pos - prev_pos).abs() < 10 {
-                                            needs_rebalance = true;
-                                        }
+                                    if gap > 1 {
+                                        new_pos = neighbor_pos - 1;
                                     } else {
-                                        new_pos = neighbor_pos / 2;
-                                        if neighbor_pos < 10 {
-                                            needs_rebalance = true;
-                                        }
+                                        // No hay espacio: ponemos provisional y pedimos rebalance.
+                                        new_pos = neighbor_pos + 1;
+                                        needs_rebalance = true;
                                     }
-
-                                    found_neighbor = true;
                                 }
                             }
 
                             if !found_neighbor {
-                                new_pos = if let Some(last) = cards.last() {
-                                    last.position + 1000
-                                } else {
-                                    1000
-                                };
+                                new_pos = cards.last().map(|c| c.position + 1000).unwrap_or(1000);
                             }
 
+                            // ✅ BORDE DB: aquí sí convertimos PmId -> String (1 vez).
                             actions_to_queue.push(DbAction::MoveCard(
-                                card_id.clone(),
-                                target_col.clone(),
+                                card_id.as_ref().to_string(),
+                                target_col.as_ref().to_string(),
                                 new_pos,
                             ));
 
                             if needs_rebalance {
-                                actions_to_queue.push(DbAction::RebalanceColumn(target_col.clone()));
+                                actions_to_queue.push(DbAction::RebalanceColumn(
+                                    target_col.as_ref().to_string(),
+                                ));
                             }
                         }
                     }
@@ -318,11 +383,13 @@ pub fn handle_mouse_released(state: &mut AppState) {
         }
     }
 
-    for action in actions_to_queue {
-        state.queue(action);
+    // Encolado fuera del borrow de state
+    if should_move {
+        for action in actions_to_queue {
+            state.queue(action);
+        }
     }
 
+    // ✅ SIEMPRE reseteamos el drag state (aunque sea misma columna o no haya hovered_column)
     state.pm_state = PmState::Idle;
-    state.hovered_column = None;
-    state.hovered_card = None;
 }

@@ -8,7 +8,7 @@ use sqlx::Row;
 use uuid::Uuid;
 use flate2::{Compression, write::GzEncoder};
 use base64::{engine::general_purpose, Engine as _};
-use std::io::Write;
+
 
 use crate::model::{
     Universe, UniverseSnapshot, UniverseSnapshotPayload, Card,
@@ -147,54 +147,111 @@ impl Database {
             pm_cards,
         };
 
-        let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+        // ✅ APLICADO: Serializar a bytes directamente
+        let json_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| sqlx::Error::Protocol(format!("JSON serialize fail: {e}").into()))?;
 
         let mut e = GzEncoder::new(Vec::new(), Compression::default());
-        e.write_all(json.as_bytes()).map_err(|_| sqlx::Error::Protocol("Compress fail".into()))?;
-        let compressed = e.finish().map_err(|_| sqlx::Error::Protocol("Compress fail".into()))?;
+        use std::io::Write;
+        e.write_all(&json_bytes)
+            .map_err(|e| sqlx::Error::Protocol(format!("Compress write fail: {e}").into()))?;
+
+        let compressed = e.finish()
+            .map_err(|e| sqlx::Error::Protocol(format!("Compress finish fail: {e}").into()))?;
 
         let size_bytes = compressed.len() as i64;
-        let compressed_b64 = general_purpose::STANDARD.encode(compressed);
-
         let sid = format!("snap-{}", Uuid::new_v4());
 
-        sqlx::query(
-            "INSERT INTO universe_snapshots (id, universe_id, name, size_bytes, compressed_b64)
-         VALUES (?, ?, ?, ?, ?)"
+        // ✅ APLICADO: Guardar como BLOB con Fallback
+        let res = sqlx::query(
+            "INSERT INTO universe_snapshots (id, universe_id, name, size_bytes, compressed_blob, compressed_b64)
+             VALUES (?, ?, ?, ?, ?, '')"
         )
-            .bind(sid)
-            .bind(universe_id)
-            .bind(name)
+            .bind(&sid)
+            .bind(&universe_id)
+            .bind(&name)
             .bind(size_bytes)
-            .bind(compressed_b64)
+            .bind(&compressed)
             .execute(&self.pool)
-            .await?;
+            .await;
 
-        Ok(())
+        match res {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such column: compressed_blob") {
+                    let compressed_b64 = general_purpose::STANDARD.encode(compressed);
+                    sqlx::query(
+                        "INSERT INTO universe_snapshots (id, universe_id, name, size_bytes, compressed_b64)
+                         VALUES (?, ?, ?, ?, ?)"
+                    )
+                        .bind(sid)
+                        .bind(universe_id)
+                        .bind(name)
+                        .bind(size_bytes)
+                        .bind(compressed_b64)
+                        .execute(&self.pool)
+                        .await?;
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     pub async fn snapshot_delete(&self, snapshot_id: String) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM universe_snapshots WHERE id = ?").bind(snapshot_id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM universe_snapshots WHERE id = ?")
+            .bind(snapshot_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
     pub async fn snapshot_restore(&self, snapshot_id: String) -> Result<(), sqlx::Error> {
-        let row: sqlx::sqlite::SqliteRow =
-            sqlx::query("SELECT compressed_b64 FROM universe_snapshots WHERE id = ?")
-                .bind(snapshot_id)
-                .fetch_one(&self.pool)
-                .await?;
+        // ✅ APLICADO: Lectura híbrida Blob/Base64
+        let row_res = sqlx::query(
+            "SELECT compressed_blob, compressed_b64 FROM universe_snapshots WHERE id = ?"
+        )
+            .bind(&snapshot_id)
+            .fetch_one(&self.pool)
+            .await;
 
-        let payload_b64: String = row.get("compressed_b64");
-        let bytes = general_purpose::STANDARD.decode(payload_b64).unwrap_or_default();
+        let (blob_opt, b64): (Option<Vec<u8>>, String) = match row_res {
+            Ok(row) => (row.try_get("compressed_blob").ok(), row.get("compressed_b64")),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such column: compressed_blob") {
+                    let row: sqlx::sqlite::SqliteRow =
+                        sqlx::query("SELECT compressed_b64 FROM universe_snapshots WHERE id = ?")
+                            .bind(&snapshot_id)
+                            .fetch_one(&self.pool)
+                            .await?;
+                    (None, row.get("compressed_b64"))
+                } else {
+                    return Err(e);
+                }
+            }
+        };
 
-        let mut d = flate2::read::GzDecoder::new(&bytes[..]);
-        let mut out = String::new();
+        let compressed_bytes = if let Some(b) = blob_opt {
+            b
+        } else {
+            general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| sqlx::Error::Protocol(format!("Base64 decode fail: {e}").into()))?
+        };
+
+        // ✅ APLICADO: Decompress a bytes
+        let mut d = flate2::read::GzDecoder::new(&compressed_bytes[..]);
+        let mut out = Vec::new();
         use std::io::Read;
-        d.read_to_string(&mut out).map_err(|_| sqlx::Error::Protocol("Decompress fail".into()))?;
+        d.read_to_end(&mut out)
+            .map_err(|e| sqlx::Error::Protocol(format!("Decompress fail: {e}").into()))?;
 
         let payload: UniverseSnapshotPayload =
-            serde_json::from_str(&out).map_err(|_| sqlx::Error::Protocol("JSON parse fail".into()))?;
+            serde_json::from_slice(&out)
+                .map_err(|e| sqlx::Error::Protocol(format!("JSON parse fail: {e}").into()))?;
 
         let mut tx = self.pool.begin().await?;
 

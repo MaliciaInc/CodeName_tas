@@ -42,7 +42,7 @@ pub fn update(state: &mut AppState, message: TimelineMessage) {
                         importance: editor.importance,
                         kind: editor.kind,
                         color: editor.color,
-                        location_id: editor.location.map(|l| l.id),
+                        location_id: editor.location_id, // ✅ C.1: Direct ID usage
                     };
                     state.queue(DbAction::SaveEvent(evt));
                     state.show_toast("Event saved", ToastKind::Success);
@@ -60,7 +60,7 @@ pub fn update(state: &mut AppState, message: TimelineMessage) {
         TimelineMessage::ImportanceChanged(v) => if let Some(e) = state.event_editor.as_mut() { e.importance = v },
         TimelineMessage::KindChanged(v) => if let Some(e) = state.event_editor.as_mut() { e.kind = v },
         TimelineMessage::ColorChanged(v) => if let Some(e) = state.event_editor.as_mut() { e.color = v },
-        TimelineMessage::LocationChanged(loc) => if let Some(e) = state.event_editor.as_mut() { e.location = loc },
+        TimelineMessage::LocationChanged(loc_id) => if let Some(e) = state.event_editor.as_mut() { e.location_id = loc_id }, // ✅ C.1: ID only
         TimelineMessage::DescriptionChanged(action) => if let Some(e) = state.event_editor.as_mut() { e.description.perform(action) },
 
         // --- ERA ACTIONS ---

@@ -3,10 +3,40 @@
 // ========================================
 // Este módulo maneja boards, columnas y cards del sistema Kanban
 
-use crate::model::{Board, Card, KanbanBoardData};
+use crate::model::{Board, BoardColumn, Card, KanbanBoardData};
 use crate::db::Database;
+use sqlx::SqlitePool;
 
 impl Database {
+
+    pub async fn load_board_full(pool: &SqlitePool, board_id: &str) -> Result<KanbanBoardData, sqlx::Error> {
+        let board = sqlx::query_as::<_, Board>("SELECT * FROM boards WHERE id = ?")
+            .bind(board_id)
+            .fetch_one(pool)
+            .await?;
+
+        let columns = sqlx::query_as::<_, BoardColumn>(
+            "SELECT * FROM board_columns WHERE board_id = ? ORDER BY position ASC"
+        )
+            .bind(board_id)
+            .fetch_all(pool)
+            .await?;
+
+        let mut columns_with_cards = Vec::new();
+        for col in columns {
+            let cards = sqlx::query_as::<_, Card>(
+                "SELECT * FROM cards WHERE column_id = ? ORDER BY position ASC"
+            )
+                .bind(&col.id)
+                .fetch_all(pool)
+                .await?;
+
+            columns_with_cards.push((col, cards));
+        }
+
+        // ✅ NEW: Use optimized constructor
+        Ok(KanbanBoardData::from_columns_and_cards(board, columns_with_cards))
+    }
     pub async fn get_all_boards(&self) -> Result<Vec<Board>, sqlx::Error> {
         crate::logger::info("🔍 DB: Querying boards...");
 
@@ -112,7 +142,7 @@ impl Database {
             .fetch_all(&self.pool)
             .await?;
 
-        let mut out: Vec<(crate::model::BoardColumn, Vec<Card>)> = Vec::new();
+        let mut columns_with_cards: Vec<(BoardColumn, Vec<Card>)> = Vec::new();
 
         for (cid, cname, pos) in cols {
             let cards: Vec<Card> = sqlx::query_as("SELECT id, column_id, title, description, position, priority FROM cards WHERE column_id = ? ORDER BY position ASC")
@@ -120,8 +150,8 @@ impl Database {
                 .fetch_all(&self.pool)
                 .await?;
 
-            out.push((
-                crate::model::BoardColumn {
+            columns_with_cards.push((
+                BoardColumn {
                     id: cid,
                     board_id: board_id.clone(),
                     name: cname,
@@ -131,7 +161,8 @@ impl Database {
             ));
         }
 
-        Ok(KanbanBoardData { board, columns: out })
+        // ✅ NEW: Use optimized constructor from model.rs
+        Ok(KanbanBoardData::from_columns_and_cards(board, columns_with_cards))
     }
 
     pub async fn upsert_card(&self, c: Card) -> Result<(), sqlx::Error> {

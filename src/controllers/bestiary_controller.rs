@@ -48,8 +48,8 @@ pub fn update(state: &mut AppState, message: BestiaryMessage) {
 
                 let mut f = editor.into_creature();
 
-                // Preservar estado archived si editamos una existente
-                if let Some(existing) = state.creatures.iter().find(|c| c.id == f.id) {
+                // ✅ REFACTOR A.3: O(1) lookup instead of O(n) iteration
+                if let Some(existing) = state.find_creature_by_id(&f.id) {
                     f.archived = existing.archived;
                 }
 
@@ -62,7 +62,7 @@ pub fn update(state: &mut AppState, message: BestiaryMessage) {
         BestiaryMessage::HabitatChanged(v) => if let Some(e) = state.creature_editor.as_mut() { e.habitat = v },
         BestiaryMessage::DescriptionChanged(action) => if let Some(e) = state.creature_editor.as_mut() { e.description.perform(action); },
         BestiaryMessage::DangerChanged(v) => if let Some(e) = state.creature_editor.as_mut() { e.danger = v },
-        BestiaryMessage::LocationChanged(loc) => if let Some(e) = state.creature_editor.as_mut() { e.home_location = loc },
+        BestiaryMessage::LocationChanged(loc_id) => if let Some(e) = state.creature_editor.as_mut() { e.home_location_id = loc_id }, // ✅ C.1: ID only
         // NUEVAS ACCIONES QUE YA NO NAVEGAN
         BestiaryMessage::Delete(id) => {state.pending_confirm = Some(crate::state::ConfirmAction::DeleteCreature(id));},
         BestiaryMessage::Archive(id) => {

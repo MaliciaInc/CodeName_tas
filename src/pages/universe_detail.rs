@@ -1,7 +1,7 @@
 use iced::{Alignment, Length};
 use iced::widget::{container, text, Column, Row, text_input};
 
-use crate::app::{AppState, Message, Route, BestiaryMessage, LocationsMessage, UniverseMessage};
+use crate::app::{AppState, Message, Route, BestiaryMessage, LocationsMessage, UniverseMessage, TimelineMessage};
 use crate::{ui, pages::E};
 use crate::state::DemoResetScope;
 
@@ -51,7 +51,7 @@ pub fn universe_detail<'a>(state: &'a AppState, t: ui::Tokens, universe_id: &'a 
                 .push(ui::outline_button(
                     t,
                     "Timeline".to_string(),
-                    Message::OpenTimeline(uid.clone()),
+                    Message::Timeline(TimelineMessage::Open(uid.clone())),
                 ))
         );
 
@@ -101,6 +101,15 @@ pub fn universe_detail<'a>(state: &'a AppState, t: ui::Tokens, universe_id: &'a 
                         t,
                         "Create Snapshot".to_string(),
                         Message::Universe(UniverseMessage::SnapshotCreate(universe_id.to_string())),
+                    )
+                })
+                .push(if busy {
+                    ui::card(t, text("Refresh (busy)").size(12).color(t.muted_fg).into())
+                } else {
+                    ui::outline_button(
+                        t,
+                        "Refresh".to_string(),
+                        Message::Universe(UniverseMessage::SnapshotRefresh(universe_id.to_string())),
                     )
                 })
                 .push(if busy || state.integrity_busy {
